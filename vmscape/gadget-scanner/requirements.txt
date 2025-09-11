@@ -1,0 +1,5 @@
+capstone
+pyelftools
+isort
+black
+alive_progress

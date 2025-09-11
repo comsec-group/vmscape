@@ -1,0 +1,13 @@
+diff --git a/vmscape/guest/linux/Makefile b/vmscape/guest/linux/Makefile
+index 2b7f67d..4eed8e5 100644
+--- a/vmscape/guest/linux/Makefile
++++ b/vmscape/guest/linux/Makefile
+@@ -836,6 +836,8 @@ ifdef CONFIG_CC_IS_GCC
+ KBUILD_CFLAGS  += $(call cc-option,--param=allow-store-data-races=0)
+ KBUILD_CFLAGS  += $(call cc-option,-fno-allow-store-data-races)
+ endif
++# No sframe generation for kernel if enabled by default
++KBUILD_CFLAGS  += $(call cc-option,-Xassembler --gsframe=no)
+ 
+ ifdef CONFIG_READABLE_ASM
+ # Disable optimizations that make assembler listings hard to read.
