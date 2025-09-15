@@ -1,0 +1,162 @@
+From 715daddfa4f594cb8af61e9178241ffbe810be5c Mon Sep 17 00:00:00 2001
+From: JeanClaude Graf <jegraf@ee-tik-cn128.ethz.ch>
+Date: Mon, 18 Aug 2025 14:28:12 +0200
+Subject: [PATCH 2/3] Add support for guest user
+
+Required adding GDT segment descriptors and selectors for the guest. In
+addition all memory has the S/U bit set, to make it available to guest
+user.
+---
+ .../selftests/kvm/include/x86/processor.h     | 31 ++++++++++++
+ .../testing/selftests/kvm/lib/x86/processor.c | 50 ++++++++++++++++---
+ 2 files changed, 73 insertions(+), 8 deletions(-)
+
+diff --git a/tools/testing/selftests/kvm/include/x86/processor.h b/tools/testing/selftests/kvm/include/x86/processor.h
+index 2efb05c2f2fb..a96432a81b4b 100644
+--- a/tools/testing/selftests/kvm/include/x86/processor.h
++++ b/tools/testing/selftests/kvm/include/x86/processor.h
+@@ -378,6 +378,37 @@ static inline unsigned int x86_model(unsigned int eax)
+ #define PTE_GET_PA(pte)		((pte) & PHYSICAL_PAGE_MASK)
+ #define PTE_GET_PFN(pte)        (PTE_GET_PA(pte) >> PAGE_SHIFT)
+ 
++// As defined in arch/x86/include/asm/segment.h
++#define GDT_ENTRY_KERNEL_CS	2
++#define GDT_ENTRY_KERNEL_DS	3
++#define GDT_ENTRY_USER_CS_STAR	4
++#define GDT_ENTRY_USER_DS	5
++#define GDT_ENTRY_USER_CS	6
++#define GDT_ENTRY_TSS		8
++
++#define KERNEL_CS	(GDT_ENTRY_KERNEL_CS * 8) // 0x10
++#define USER_CS_STAR	(GDT_ENTRY_USER_CS_STAR * 8 + 3) // 0x23
++#define KERNEL_DS	(GDT_ENTRY_KERNEL_DS * 8) // 0x18
++#define USER_DS		(GDT_ENTRY_USER_DS * 8 + 3) // 0x2b
++#define USER_CS		(GDT_ENTRY_USER_CS * 8 + 3) // 0x33
++#define TSS		(GDT_ENTRY_TSS * 8) // 0x40
++
++// As defined in arch/x86/include/asm/processor.h
++struct x86_hw_tss {
++	u32 reserved1;
++	u64 sp0;
++	u64 sp1;
++	u64 sp2;
++	u64 reserved2;
++	u64 ist[7];
++	u32 reserved3;
++	u32 reserved4;
++	u16 reserved5;
++	u16 io_bitmap_base;
++
++} __attribute__((packed));
++
++
+ /* General Registers in 64-Bit Mode */
+ struct gpr64_regs {
+ 	u64 rax;
+diff --git a/tools/testing/selftests/kvm/lib/x86/processor.c b/tools/testing/selftests/kvm/lib/x86/processor.c
+index d4c19ac885a9..7bdccc35b4b7 100644
+--- a/tools/testing/selftests/kvm/lib/x86/processor.c
++++ b/tools/testing/selftests/kvm/lib/x86/processor.c
+@@ -13,10 +13,6 @@
+ #define NUM_INTERRUPTS 256
+ #endif
+ 
+-#define KERNEL_CS	0x8
+-#define KERNEL_DS	0x10
+-#define KERNEL_TSS	0x18
+-
+ vm_vaddr_t exception_handlers;
+ bool host_cpu_is_amd;
+ bool host_cpu_is_intel;
+@@ -160,7 +156,7 @@ static uint64_t *virt_create_upper_pte(struct kvm_vm *vm,
+ 	paddr = vm_untag_gpa(vm, paddr);
+ 
+ 	if (!(*pte & PTE_PRESENT_MASK)) {
+-		*pte = PTE_PRESENT_MASK | PTE_WRITABLE_MASK;
++		*pte = PTE_PRESENT_MASK | PTE_WRITABLE_MASK | PTE_USER_MASK;
+ 		if (current_level == target_level)
+ 			*pte |= PTE_LARGE_MASK | (paddr & PHYSICAL_PAGE_MASK);
+ 		else
+@@ -225,7 +221,8 @@ void __virt_pg_map(struct kvm_vm *vm, uint64_t vaddr, uint64_t paddr, int level)
+ 	pte = virt_get_pte(vm, pde, vaddr, PG_LEVEL_4K);
+ 	TEST_ASSERT(!(*pte & PTE_PRESENT_MASK),
+ 		    "PTE already present for 4k page at vaddr: 0x%lx", vaddr);
+-	*pte = PTE_PRESENT_MASK | PTE_WRITABLE_MASK | (paddr & PHYSICAL_PAGE_MASK);
++	*pte = PTE_PRESENT_MASK | PTE_WRITABLE_MASK | PTE_USER_MASK |
++		(paddr & PHYSICAL_PAGE_MASK);
+ 
+ 	/*
+ 	 * Neither SEV nor TDX supports shared page tables, so only the final
+@@ -450,6 +447,21 @@ static void kvm_seg_set_kernel_code_64bit(struct kvm_segment *segp)
+ 	segp->present = 1;
+ }
+ 
++static void kvm_seg_set_user_code_64bit(struct kvm_segment *segp)
++{
++	memset(segp, 0, sizeof(*segp));
++	segp->selector = USER_CS;
++	segp->limit = 0xFFFFFFFFu;
++	segp->s = 0x1; /* kTypeCodeData */
++	segp->type = 0x08 | 0x01 | 0x02; /* kFlagCode | kFlagCodeAccessed
++					  * | kFlagCodeReadable
++					  */
++	segp->g = true;
++	segp->l = true;
++	segp->present = 1;
++	segp->dpl = 3;
++}
++
+ static void kvm_seg_set_kernel_data_64bit(struct kvm_segment *segp)
+ {
+ 	memset(segp, 0, sizeof(*segp));
+@@ -463,6 +475,20 @@ static void kvm_seg_set_kernel_data_64bit(struct kvm_segment *segp)
+ 	segp->present = true;
+ }
+ 
++static void kvm_seg_set_user_data_64bit(struct kvm_segment *segp)
++{
++	memset(segp, 0, sizeof(*segp));
++	segp->selector = USER_DS;
++	segp->limit = 0xFFFFFFFFu;
++	segp->s = 0x1; /* kTypeCodeData */
++	segp->type = 0x00 | 0x01 | 0x02; /* kFlagData | kFlagDataAccessed
++					  * | kFlagDataWritable
++					  */
++	segp->g = true;
++	segp->present = true;
++	segp->dpl = 3;
++}
++
+ vm_paddr_t addr_arch_gva2gpa(struct kvm_vm *vm, vm_vaddr_t gva)
+ {
+ 	int level = PG_LEVEL_NONE;
+@@ -482,8 +508,8 @@ static void kvm_seg_set_tss_64bit(vm_vaddr_t base, struct kvm_segment *segp)
+ {
+ 	memset(segp, 0, sizeof(*segp));
+ 	segp->base = base;
+-	segp->limit = 0x67;
+-	segp->selector = KERNEL_TSS;
++	segp->limit = sizeof(struct x86_hw_tss) - 1;
++	segp->selector = TSS;
+ 	segp->type = 0xb;
+ 	segp->present = 1;
+ }
+@@ -605,7 +631,15 @@ static void vm_init_descriptor_tables(struct kvm_vm *vm)
+ 	kvm_seg_set_kernel_data_64bit(&seg);
+ 	kvm_seg_fill_gdt_64bit(vm, &seg);
+ 
++	kvm_seg_set_user_code_64bit(&seg);
++	kvm_seg_fill_gdt_64bit(vm, &seg);
++
++	kvm_seg_set_user_data_64bit(&seg);
++	kvm_seg_fill_gdt_64bit(vm, &seg);
++
+ 	kvm_seg_set_tss_64bit(vm->arch.tss, &seg);
++	struct x86_hw_tss *tss = addr_gva2hva(vm, vm->arch.tss);
++	tss->io_bitmap_base = sizeof(struct x86_hw_tss);
+ 	kvm_seg_fill_gdt_64bit(vm, &seg);
+ }
+ 
+-- 
+2.51.0
+

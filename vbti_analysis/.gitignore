@@ -1,0 +1,6 @@
+LinuxKernel
+linux-headers-*.deb
+linux-image-*.deb
+linux-libc-dev_*.deb
+linux-upstream_*
+
