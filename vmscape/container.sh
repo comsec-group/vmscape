@@ -3,7 +3,7 @@ set -e
 set -u
 
 SCRIPT_DIR="$(realpath "$(dirname "$0")")"
-BASE_DIR="$SCRIPT_DIR/.."
+BASE_DIR="$SCRIPT_DIR/../"
 CONTAINER_DIR="$SCRIPT_DIR/container-ubuntu-questing"
 
 USER_NAME="$(id -un)"
@@ -15,37 +15,38 @@ KVM_ID="$(getent group "$KVM_NAME" | cut -d: -f3)"
 function run-nspawn() {
     sudo systemd-nspawn \
         -D "$CONTAINER_DIR" \
-        --bind "$BASE_DIR":/workspace \
-        --chdir /workspace/vmscape \
         --capability=all \
+        --bind "$BASE_DIR":/workspace \
         --bind /dev/kvm \
         --bind /dev/net/tun \
         --bind /dev/fuse \
         --bind /dev/loop-control \
+        --chdir /workspace/vmscape \
         "$@"
 }
+
+# prepare the actual container
 
 if ! [ -d "$CONTAINER_DIR" ]; then
     # install container dependencies
     sudo apt install debootstrap systemd-container
 
-    # bootstrap the ubuntu
+    # bootstrap the ubuntu with packages needed for building the virtual machine
     sudo debootstrap \
         --arch amd64 \
         --variant minbase \
-        --include sudo,tmux,vim,git,wget,cpio,ca-certificates,build-essential,libncurses-dev,bison,bc,flex,libssl-dev,libelf-dev,fakeroot \
         questing "$CONTAINER_DIR" http://archive.ubuntu.com/ubuntu/
 
     # qemu with the right version 
-    run-nspawn -- sudo apt install -y \
+    run-nspawn -- apt install -y \
         ./guest/qemu/qemu-system-common_10.0.2+ds-1ubuntu2_amd64.deb \
         ./guest/qemu/qemu-system-x86_10.0.2+ds-1ubuntu2_amd64.deb \
         ./guest/qemu/qemu-utils_10.0.2+ds-1ubuntu2_amd64.deb
 
     # for debugging
-    run-nspawn -- sudo apt install -y \
-        gdb \
-        ./guest/qemu/qemu-system-x86-dbgsym_10.0.2+ds-1ubuntu2_amd64.ddeb
+    # run-nspawn -- sudo apt install -y \
+    #     gdb \
+    #     ./guest/qemu/qemu-system-x86-dbgsym_10.0.2+ds-1ubuntu2_amd64.ddeb
 
     # create user and group matching host to avoid file permissions issues
     run-nspawn -- groupadd \
@@ -62,16 +63,6 @@ if ! [ -d "$CONTAINER_DIR" ]; then
         -G "$KVM_NAME" \
         -m \
         "$USER_NAME"
-
-    # give the user in the container sudo access
-    echo "$USER_NAME ALL=(ALL:ALL) NOPASSWD: ALL" | \
-        sudo tee -a "$CONTAINER_DIR/etc/sudoers.d/$USER_NAME"
-
-    # we somehow needed this for DNS to work
-    sudo rm -v "$CONTAINER_DIR/etc/resolv.conf"
-    sudo cp -v /etc/resolv.conf "$CONTAINER_DIR/etc/resolv.conf"
-
-    # for debugging install ddebs repo and the gdb and qemu debug packages
 fi
 
 run-nspawn --user "$USER_NAME" -- bash
