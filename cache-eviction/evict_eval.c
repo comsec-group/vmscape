@@ -5,20 +5,27 @@
 #include <sys/mman.h>
 #include <unistd.h>
 
-#define ROUNDS       (1 << 12)
-#define MAX_CHAIN    128
-#define CHAIN_OFFSET (512 + 8)
-
-#define CACHE_MISS_THRES 300
-#define SECRET           0
-#define RB_OFFSET        (0xcc0 + MAX_CHAIN * 8192 + 4096)
-#define RB_SLOTS         2
 #include "compiler.h"
-#include "jita.h"
 #include "lib.h"
 #include "log.h"
-#include "mem.h"
-#include "rb_tools.h"
+
+/* start measure */
+static __always_inline uint64_t rb_rdtsc(void) {
+    unsigned lo, hi;
+    asm volatile("lfence\n\t"
+                 "rdtsc\n\t"
+                 : "=d"(hi), "=a"(lo));
+    return ((uint64_t) hi << 32) | lo;
+}
+
+/* stop measure */
+static __always_inline uint64_t rb_rdtscp(void) {
+    unsigned lo, hi;
+    asm volatile("rdtscp\n\t"
+                 "lfence\n\t"
+                 : "=d"(hi), "=a"(lo)::"ecx");
+    return ((uint64_t) hi << 32) | lo;
+}
 
 #define PAGE_4K     (4096UL)
 #define PAGE_2M     (512 * PAGE_4K)
@@ -26,36 +33,6 @@
 #define PROT_RW     (PROT_READ | PROT_WRITE)
 #define PROT_RWX    (PROT_RW | PROT_EXEC)
 #define PG_ROUND(n) (((((n) - 1UL) >> 12) + 1) << 12)
-
-#define HVA_SRC 0x555555de4cc1
-#define HVA_DST 0x555555bfc295
-
-// clang-format off
-uarf_psnip_declare_define(psnip_src,
-    "call *0x8(%rax)\n\t"
-    "ret\n\t"
-);
-// clang-format on
-
-// clang-format off
-uarf_psnip_declare_define(psnip_victim_dst, 
-    "mfence\n\t" // Stop speculation
-    "lfence\n\t"
-    "ret\n\t"
-);
-// clang-format on
-
-// clang-format off
-uarf_psnip_declare_define(psnip_train_dst, 
-    "mov (%rdx), %r8\n\t"
-    ".rept "STR(MAX_CHAIN-1)"\n\t"
-    "mov (%r8), %r8\n\t"
-    ".endr\n\t"
-    "mfence\n\t" // Stop speculation
-    "lfence\n\t"
-    "ret\n\t"
-);
-// clang-format on
 
 #if defined(MARCH_ZEN5)
 #define NUM_MEASUREMENTS 8
@@ -70,7 +47,7 @@ uarf_psnip_declare_define(psnip_train_dst,
 #define L3_SETS          32 * 1024
 #define L3_SET_SIZE      32
 #elif defined(MARCH_ZEN4)
-#define NUM_MEASUREMENTS 32
+#define NUM_MEASUREMENTS 16
 #define EVICT_ITERATIONS 1
 #define L1_SETS          64
 #define L1_SET_SIZE      8
@@ -84,23 +61,11 @@ uarf_psnip_declare_define(psnip_train_dst,
 #else
 #error "Unknown microarchitecture"
 #endif
-
-#define L1_THRESH  0
-#define L2_THRESH  10
-#define L3_THRESH  30
 #define RAM_THRESH 300
 
-typedef struct actxt {
-    uint64_t entry_point;
-} actxt_t;
-
 volatile uint64_t *l2_sets[L2_SETS][L2_1GB_SET_SIZE] = {0};
-volatile uint64_t *l1_sets[L1_SETS][L1_SET_SIZE] = {0};
 uint64_t l2_sets_offset = 0;
 uint64_t measurements[NUM_MEASUREMENTS];
-uint64_t dummy_val[MAX_CHAIN];
-uint64_t dst_ptr[2];
-uint64_t dst_train_ptr[2];
 
 static int stats_compare_u64(const void *a, const void *b) {
     return *(uint64_t *) a > *(uint64_t *) b;
@@ -138,19 +103,11 @@ uint64_t measure_eviction(volatile uint64_t *victim_ptr, volatile uint64_t **evi
             }
         }
         uarf_mfence();
-#ifdef RDPRU_AVAILABLE
-        uint64_t start = rb_rdpru();
-#else
         uint64_t start = rb_rdtsc();
-#endif
         uarf_lfence();
         *victim_ptr;
         uarf_lfence();
-#ifdef RDPRU_AVAILABLE
-        uint64_t end = rb_rdpru();
-#else
         uint64_t end = rb_rdtscp();
-#endif
         measurements[i] = end - start;
     }
     uint64_t median = stats_median_u64(measurements, NUM_MEASUREMENTS);
@@ -190,22 +147,6 @@ uint8_t check_cross_eviction(volatile uint64_t **eviction_set_1,
     uint64_t total_time = measure_self_eviction(eviction_set);
 
     return total_time > baseline + 100;
-}
-
-uint8_t build_l1_sets(uint64_t mem_ptr,
-                      volatile uint64_t *l1_sets[L1_SETS][L1_SET_SIZE]) {
-
-    fflush(stdout);
-    // find the first 2MB page where we can build all the sets
-    for (uint64_t offset_4k = 0; offset_4k < L1_SET_SIZE * PAGE_4K; ++offset_4k) {
-        uint64_t base_4k = mem_ptr + (offset_4k * PAGE_4K);
-        // split the cache lines to the sets
-        for (uint64_t offset_6b = 0; offset_6b < L1_SETS; ++offset_6b) {
-            uint64_t base_set = base_4k + (offset_6b << 6);
-            l1_sets[offset_6b][offset_4k] = _ptr(base_set);
-        }
-    }
-    return 1;
 }
 
 uint8_t build_l2_sets(uint64_t mem_ptr,
@@ -319,120 +260,7 @@ uint8_t build_l2_sets(uint64_t mem_ptr,
     return 0;
 }
 
-static void swap_elements(uint64_t **set, size_t index_1, size_t index_2) {
-    uint64_t *tmp = set[index_1];
-    set[index_1] = set[index_2];
-    set[index_2] = tmp;
-}
-static void shuffle_array(uint64_t **set, size_t size) {
-    if (size == 0)
-        return;
-    for (size_t i = size - 1; i > 0; --i) {
-        size_t j = rand() % (i + 1);
-        swap_elements(set, j, i);
-    }
-}
-
-void measure_window_size(actxt_t *ctxt, volatile uint64_t **eviction_sets,
-                         uint64_t num_eviction_set, uint64_t eviction_set_size,
-                         uint64_t eviction_set_total, uint64_t threshold, char *label) {
-    uint64_t baseline = measure_eviction(&dst_ptr[1], NULL, 0);
-
-    // try to find the right eviction set
-    int set_index = -1;
-    int64_t access_time = 0;
-    for (int set = 0; set < num_eviction_set; ++set) {
-        access_time =
-            measure_eviction(&dst_ptr[1], &eviction_sets[set * eviction_set_total],
-                             eviction_set_size) -
-            baseline;
-        if (access_time >= threshold) {
-            // printf("time %ld\n", access_time);
-            set_index = set;
-            break;
-        }
-    }
-    if (access_time >= RAM_THRESH) {
-        printf("evicted from L3\n");
-    }
-    else if (access_time > L2_THRESH) {
-        printf("evicted from L2\n");
-    }
-    else if (access_time > L1_THRESH) {
-        printf("evicted from L1\n");
-    }
-    else {
-        printf("target in L1\n");
-    }
-    if (num_eviction_set != 0 && set_index == -1) {
-        UARF_LOG_ERROR("set not found\n");
-    }
-
-    uint64_t *rb_chain = _ptr(RB_PTR);
-    uint64_t *chain_ptr[MAX_CHAIN + 1];
-    printf("%s = [", label);
-    for (int chain_len = 1; chain_len < MAX_CHAIN; ++chain_len) {
-        // generate pointers for chain
-        for (int k = 0; k < chain_len - 1; ++k) {
-            chain_ptr[k] = &rb_chain[CHAIN_OFFSET * (k + 1)];
-            if (_ul(chain_ptr[k]) >= RB_PTR + RB_OFFSET + SECRET * RB_STRIDE) {
-                UARF_LOG_ERROR("address generation went too far 0x%012lx - 0x%012lx!\n",
-                               _ul(chain_ptr[k]),
-                               RB_PTR + RB_OFFSET + SECRET * RB_STRIDE);
-            }
-        }
-        chain_ptr[chain_len - 1] = _ptr(RB_PTR + RB_OFFSET + SECRET * RB_STRIDE);
-        // shuffle the pointers
-        shuffle_array(&chain_ptr[0], chain_len - 1);
-
-        // chain the pointers
-        for (int k = 0; k < chain_len - 1; ++k) {
-            *(chain_ptr[k]) = _ul(chain_ptr[k + 1]);
-        }
-
-        rb_reset();
-        for (size_t i = 0; i < ROUNDS; i++) {
-            uarf_pi_wrmsr(MSR_PRED_CMD, 1 << MSR_PRED_CMD__IBPB);
-
-            asm volatile(""
-                         "call *%2\n\t"
-                         :
-                         : "d"(dummy_val), "a"(dst_train_ptr), "r"(ctxt->entry_point)
-                         : "r8", "memory");
-
-            rb_flush();
-
-            if (set_index != -1) {
-                for (int k = 0; k < EVICT_ITERATIONS; ++k) {
-                    for (int e = 0; e < eviction_set_size; ++e) {
-                        *eviction_sets[set_index * eviction_set_total + e];
-                        uarf_lfence();
-                    }
-                }
-            }
-
-            uarf_mfence();
-
-            asm volatile(""
-                         "call *%2\n\t"
-                         :
-                         : "d"(chain_ptr), "a"(dst_ptr), "r"(ctxt->entry_point)
-                         : "r8", "memory");
-
-            for (volatile size_t i = 0; i < 10000; i++) {
-            }
-            rb_reload();
-        }
-
-        printf("%ld, ", rb_hist[SECRET]);
-    }
-    printf("]\n");
-}
-
-int main(void) {
-    uarf_pi_init();
-    rb_init();
-
+int main(int argc, char const *argv[]) {
     void *mem = mmap(NULL, PAGE_1G, PROT_READ | PROT_WRITE,
                      MAP_PRIVATE | MAP_ANONYMOUS | MAP_HUGETLB | MFD_HUGE_2MB, -1, 0);
     if (mem == MAP_FAILED) {
@@ -444,54 +272,24 @@ int main(void) {
         *((volatile uint64_t *) (_ul(mem) + offset)) = offset;
     }
 
-    UarfStub stub_src = uarf_stub_init();
-    UarfStub stub_victim_dst = uarf_stub_init();
-    UarfStub stub_train_dst = uarf_stub_init();
-    UarfJitaCtxt jita_src = uarf_jita_init();
-    UarfJitaCtxt jita_victim_dst = uarf_jita_init();
-    UarfJitaCtxt jita_train_dst = uarf_jita_init();
-
-    uarf_jita_push_psnip(&jita_src, &psnip_src);
-    uarf_jita_push_psnip(&jita_victim_dst, &psnip_victim_dst);
-    uarf_jita_push_psnip(&jita_train_dst, &psnip_train_dst);
-
-    uarf_jita_allocate(&jita_src, &stub_src, HVA_SRC);
-    uarf_jita_allocate(&jita_victim_dst, &stub_victim_dst, HVA_DST + 0x6000);
-    uarf_jita_allocate(&jita_train_dst, &stub_train_dst, HVA_DST);
-
-    uint64_t entry_point = stub_src.addr;
-
-    UARF_LOG_INFO("Build eviction sets\n");
-    if (!build_l1_sets(_ul(mem), l1_sets)) {
-        UARF_LOG_ERROR("Failed to build L1 eviction sets!\n");
-        exit(1);
-    }
+    UARF_LOG_INFO("Build L3 eviction sets\n");
     if (!build_l2_sets(_ul(mem), l2_sets)) {
         UARF_LOG_ERROR("Failed to build L3 eviction sets!\n");
         exit(1);
     }
-
-    for (int i = 0; i < MAX_CHAIN - 1; ++i) {
-        dummy_val[i] = _ul(&dummy_val[i + 1]);
+    else {
+        // test L3 eviction
+        UARF_LOG_INFO("Test L3 eviction sets\n");
+        for (int l2_set = 0; l2_set < L2_SETS; ++l2_set) {
+            uint64_t res = measure_eviction(l2_sets[l2_set][0], &l2_sets[l2_set][1],
+                                            L2_1GB_SET_SIZE - 1);
+            if (res < RAM_THRESH) {
+                UARF_LOG_ERROR("L3 set %d broken %lu!\n", l2_set, res);
+                exit(2);
+            }
+        }
+        UARF_LOG_INFO("All L3 sets work!\n");
     }
-
-    dst_ptr[1] = _ul(stub_victim_dst.addr);
-    dst_train_ptr[1] = _ul(stub_train_dst.addr);
-
-    actxt_t ctxt = {.entry_point = entry_point};
-
-    // measure the speculation window sizes for the different cache levels
-    // no eviction means the target should stay in L1
-    measure_window_size(&ctxt, NULL, 0, 0, 0, L1_THRESH, "y_l1_arr");
-    // evict the target from L1 such that it should be in L2 still
-    measure_window_size(&ctxt, &l1_sets[0][0], L1_SETS, L1_SET_SIZE, L1_SET_SIZE,
-                        L2_THRESH, "y_l2_arr");
-    // evict the target from L2 such that it will only be in L3
-    measure_window_size(&ctxt, &l2_sets[0][0], L2_SETS, L2_EVICTION_SIZE, L2_1GB_SET_SIZE,
-                        L3_THRESH, "y_l3_arr");
-    // evict the target from L3 such that it should come from memory
-    measure_window_size(&ctxt, &l2_sets[0][0], L2_SETS, L2_1GB_SET_SIZE, L2_1GB_SET_SIZE,
-                        RAM_THRESH, "y_ram_arr");
 
     return 0;
 }
