@@ -60,9 +60,14 @@ if ! [ -d "$CONTAINER_DIR" ]; then
     run-nspawn -- useradd \
         --uid "$USER_ID" \
         --gid "$GROUP_ID" \
+        --shell /bin/bash \
         -G "$KVM_NAME" \
         -m \
         "$USER_NAME"
 fi
 
-run-nspawn --user "$USER_NAME" -- bash
+if [ "$#" -gt "0" ]; then
+    run-nspawn "$@"
+else
+    run-nspawn --user "$USER_NAME" -- bash
+fi

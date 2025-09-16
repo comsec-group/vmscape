@@ -23,6 +23,7 @@ function usage() {
     echo "Usage: $0 [OPTIONS]"
     echo ""
     echo "Options:"
+    echo "       --initramfs        Use a specific initramfs."
     echo "       --demo             Run VM in demo mode with a shorter secret."
     echo "   -e, --eval             Run VM in evaluation mode."
     echo "   -h, --help             Display this help message."
@@ -36,7 +37,7 @@ function random_string() {
     tr -dc A-Za-z0-9 2>/dev/null </dev/urandom | head -c "$count"
 }
 
-PARSED_ARGUMENTS=$(getopt --name "$0" --options=h --longoptions demo,eval,help -- "$@")
+PARSED_ARGUMENTS=$(getopt --name "$0" --options=h --longoptions demo,eval,help,initramfs: -- "$@")
 VALID_ARGUMENTS=$?
 if [ "$VALID_ARGUMENTS" != "0" ]; then
     echo "Invalid argument"
@@ -57,6 +58,11 @@ while [ "$#" -gt 1 ]; do
             initrd_file="$INITRD_EVAL_FILE"
             eval=true
             set -x # for better visibility of the executed commands in eval mode
+            shift
+            ;;
+        --initramfs)
+            shift
+            initrd_file="$1"
             shift
             ;;
         -h|--help)

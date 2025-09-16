@@ -23,6 +23,8 @@ bash guest/run-vm.sh
 
 # inside the virtual machine that just started you can run the attack
 ./attack
+
+# to stop the virtual machine, press Ctrl-A, X
 ```
 
 > [!todo] More details will be added in the coming days

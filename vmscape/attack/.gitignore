@@ -3,3 +3,5 @@ break_aslr.o
 pi.ko
 rap.ko
 secret.txt
+evict_eval
+measure_window
