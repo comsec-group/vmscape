@@ -7,7 +7,7 @@ set -e
 set -E
 set -o pipefail
 
-trap 'log_err "Command failed at line $LINENO: $BASH_COMMAND"; log_err "Setup incomplete' ERR
+trap 'log_err "Command failed at line $LINENO: $BASH_COMMAND"; log_err "Setup incomplete"' ERR
 
 exec 3>&1
 
@@ -27,9 +27,10 @@ declare -a SELFTEST_PATCHES=( \
     )
 
 KERNEL_SELFTEST_BR="vmscape"
-KERNEL_BUILD_NAME="vmscape-$(date +%y%m%d%H%M%S)"
+KERNEL_BUILD_NAME="vmscape"
+new_kernel_build_name="$KERNEL_BUILD_NAME-$(date +%y%m%d%H%M%S)"
 
-UARF_PATH="$SCRIPT_DIR/uARF"
+UARF_PATH="$SCRIPT_DIR/../uARF"
 
 source "$SCRIPT_DIR/util.sh"
 source "$SCRIPT_DIR/kernel.sh"
@@ -114,18 +115,6 @@ function patch_selftest() {
         git apply --check $e || { log_err "Patch $e does not apply"; exit 1; }
         git am --quiet < $e
     done
-
-    # log_debug "Fixing paths"
-    # cd "$KVM_SELFTEST_PATH/include"
-    # rm -rf uarf
-    # ln -s "$UARF_PATH/include" uarf
-    #
-    # cd "$KVM_SELFTEST_PATH/lib"
-    # rm -rf uarf
-    # ln -s "$UARF_PATH/" uarf
-    #
-    # git add "$KVM_SELFTEST_PATH"
-    # git commit -m "Fix include and lib paths" --quiet
 }
 
 # Build and install uARF
@@ -135,8 +124,7 @@ function setup_uarf() {
 
     cd "$uarf_dir"
     make clean
-    make -j $(nproc)
-    make kmods -j $(nproc)
+    make -j "$(nproc)"
     log_info "Installing uARF system-wide. Requiring sudo"
     sudo make install > /dev/null
 }
@@ -184,9 +172,9 @@ setup_uarf "$UARF_PATH"
 log_info "Building kernel for host"
 kernel_prepare_src "$KERNEL_PATH" "$KERNEL_SELFTEST_BR"
 kernel_config_host "$KERNEL_PATH"
-kernel_build "$KERNEL_PATH" "$KERNEL_BUILD_NAME"
-install_kernel "$KERNEL_PATH" "$KERNEL_BUILD_NAME"
-if ! is_kernel_installed "$KERNEL_BUILD_NAME"; then
+kernel_build "$KERNEL_PATH" "$new_kernel_build_name"
+install_kernel "$KERNEL_PATH" "$new_kernel_build_name"
+if ! is_kernel_installed "$new_kernel_build_name"; then
     log_err "Failed to install kernel"
     exit 1
 fi

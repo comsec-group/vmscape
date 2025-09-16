@@ -10,19 +10,6 @@ endif
 PLATFORM_CONFIG := $(uARF_ROOT)/config/$(PLATFORM).config
 include $(PLATFORM_CONFIG)
 
-COMMON_DEFINE := -Dzen4=1 -Dzen5=2 -Dskylake=3
-
-ifeq ($(HOSTNAME), ee-tik-cn128)
-    COMMON_DEFINE += -DUARCH=zen4
-else ifeq ($(HOSTNAME), ee-tik-cn145)
-    COMMON_DEFINE += -DUARCH=zen5
-else ifeq ($(HOSTNAME), jcarch)
-    COMMON_DEFINE += -DUARCH=skylake
-else
-    $(warning "Unrecognised system '${HOSTNAME}'")
-endif
-
-
 uARF_SRC := $(uARF_ROOT)/src
 uARF_INCL := $(uARF_ROOT)/include
 uARF_TEST := $(uARF_ROOT)/tests
@@ -33,12 +20,7 @@ AR := ar
 
 COMMON_INCLUDES := -I$(uARF_INCL)
 
-# ifdef KTF_ROOT
-# export __KTF__
-# COMMON_INCLUDES += -I$(KTF_ROOT)/include
-# endif
-
-COMMON_FLAGS := $(COMMON_INCLUDES) $(COMMON_DEFINE) -MP -MMD
+COMMON_FLAGS := $(COMMON_INCLUDES) -MP -MMD
 AFLAGS := $(COMMON_FLAGS) -D__ASSEMBLY__
 # WARNING Changing the optimisation leads to different overheads of the measurement function
 CFLAGS := $(COMMON_FLAGS) -Wall -Wextra -g -static -O3
@@ -57,8 +39,6 @@ LIBRARY_PREFIX = /usr/local
 LIBRARY_INCLUDE_DIR = $(LIBRARY_PREFIX)/include/$(LIBRARY_NAME)
 LIBRARY_LIB_DIR = $(LIBRARY_PREFIX)/lib
 
-# LDFLAGS := -L $(uARF_ROOT) -l$(LIBRARY_NAME)
-
 ifneq ($(TESTCASE),)
 TESTCASE_BASE := $(uARF_TEST)/$(TESTCASE)
 TESTCASE_BIN := $(notdir $(TESTCASE)).bin
@@ -72,7 +52,7 @@ ifneq ($(V), 1)
 	VERBOSE=@
 endif
 
-all: $(LIBRARY) kmods test
+all: $(LIBRARY) kmods
 
 $(LIBRARY): $(OBJS)
 	@echo "AR " $@
@@ -116,9 +96,10 @@ kmods_clean:
 .PHONY: install
 install: $(LIBRARY) uninstall
 	@echo "Install library"
-	$(VERBOSE) mkdir -p $(LIBRARY_LIB_DIR) $(LIBRARY_INCLUDE_DIR)
-	$(VERBOSE) cp $(LIBRARY) $(LIBRARY_LIB_DIR)/
-	$(VERBOSE) cp -r include/* $(LIBRARY_INCLUDE_DIR)/
+	$(VERBOSE) install -d -m 755 $(LIBRARY_LIB_DIR) $(LIBRARY_INCLUDE_DIR)/kmod
+	$(VERBOSE) install -m 644 $(LIBRARY) $(LIBRARY_LIB_DIR)/
+	$(VERBOSE) install -m 644 -D include/*.h $(LIBRARY_INCLUDE_DIR)/
+	$(VERBOSE) install -m 644 -D include/kmod/*.h $(LIBRARY_INCLUDE_DIR)/kmod
 
 # Uninstall library
 .PHONY: uninstall

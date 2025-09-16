@@ -21,7 +21,7 @@ function log_err() {
 
 # Ensure the system complies with our tested systems and that KVM is available
 function verify_system() {
-    log_info "Verifying you system."
+    log_info "Verifying your system."
 
     if [ $(uname) != "Linux" ]; then
         log_err "Well, well, well."

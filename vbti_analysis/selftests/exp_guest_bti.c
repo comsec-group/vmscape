@@ -265,7 +265,7 @@ static void guest_run_fr_spec_user(void) {
 static void guest_run_cache_measure(void) {
     GUEST_PRINTF("Cache:      %lu\n", uarf_get_access_time_cached(1000));
     GUEST_PRINTF("Uncache:    %lu\n", uarf_get_access_time_uncached(1000));
-    GUEST_PRINTF("Current TH: %lu\n", UARF_FRS_THRESH);
+    GUEST_PRINTF("Current TH: %d\n", UARF_FRS_THRESH);
     GUEST_DONE();
 }
 

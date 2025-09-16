@@ -7,7 +7,7 @@ set -e
 set -E
 set -o pipefail
 
-trap 'log_err "Command failed at line $LINENO: $BASH_COMMAND"; log_err "Preparation incomplete' ERR
+trap 'log_err "Command failed at line $LINENO: $BASH_COMMAND"; log_err "Preparation incomplete"' ERR
 
 exec 3>&1
 
@@ -16,7 +16,7 @@ cd "$SCRIPT_DIR"
 
 KERNEL_BUILD_NAME="vmscape" # TODO: use variable from setup.sh
 
-UARF_PATH="$SCRIPT_DIR/uARF"
+UARF_PATH="$SCRIPT_DIR/../uARF"
 
 source "$SCRIPT_DIR/util.sh"
 
@@ -72,7 +72,7 @@ function load_module() {
         return 0
     fi
 
-    log_debug "Loading '$module_name'"
+    log_debug "Loading '$module_name' from '$module_path'"
 
     sudo insmod "$module_path"
 
@@ -80,7 +80,6 @@ function load_module() {
         log_err "Insmod did not fail but module not loaded. Should not happen."
         exit 1
     fi
-    false
 }
 
 if ! verify_system; then
@@ -89,11 +88,15 @@ if ! verify_system; then
     log_info "Best of luck..."
 fi
 
-if ! verify_kernel "$KERNEL_BUILD_NAME"; then
-    log_err "You are not using the correct kernel. It could still work, but you would be on your own..."
-    user_confirms || { echo "Exit."; exit 5; }
-    log_info "Best of luck..."
-fi
+# if ! verify_kernel "$KERNEL_BUILD_NAME"; then
+#     log_err "You are not using the correct kernel. It could still work, but you would be on your own..."
+#     user_confirms || { echo "Exit."; exit 5; }
+#     log_info "Best of luck..."
+# fi
+
+# Required to rebuild as they need to match kernel version
+log_info "Build custom kernel modules"
+make -C "$UARF_PATH" kmods -j "$(nproc)"
 
 log_info "Load custom kernel modules. Requires sudo."
 load_module "pi"

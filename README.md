@@ -21,18 +21,18 @@ Although Intel's recent CPUs offer better isolation, gaps still exist.
 
 ## Overview
 
-> ![IMPORTANT]
+> [!IMPORTANT]
 > All work was conducted on Ubuntu 24.04, and functionality has only been verified on this version.
 
 Our artefacts are structured as follows:
 
-- **[e2e Exploit VMScape](vmscape/README.md):** The end-to-end exploit leaking QEMU secrets on Zen 4 and Zen 5, as described in our §8 of our paper.
+- **[e2e Exploit VMScape](./vmscape/):** The end-to-end exploit leaking QEMU secrets on Zen 4 and Zen 5, as described in our §8 of our paper.
 
-- **[vBTI Analysis](vbti_analysis/README.md):** The systematic analysis testing domain isolation in virtualised environments, as described in §5 of our paper.
+- **[vBTI Analysis](./vbti_analysis/):** The systematic analysis testing domain isolation in virtualised environments, as described in §5 of our paper.
 
-- **[Benchmarks](benchmarks/README.md):** Our scripts to benchmark the mitigations, as described in §9.2 of our paper.
+- **[Benchmarks](./benchmarks/):** Our scripts to benchmark the mitigations, as described in §9.2 of our paper.
 
-- **[uARF](uARF/README.md):** Our custom reverse-engineering and exploitation library.
+- **[uARF](./uARF/):** Our custom reverse-engineering and exploitation library.
 
 ## Citing our Paper
 

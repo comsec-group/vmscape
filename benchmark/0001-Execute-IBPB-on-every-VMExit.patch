@@ -1,7 +1,7 @@
-From c9dc52588faaf0f604dd7caebcff5d4c919d1cbb Mon Sep 17 00:00:00 2001
+From e91a00ddca23a99b8a9743a47e6033007bd866ca Mon Sep 17 00:00:00 2001
 From: Jean-Claude Graf <mail@jeanclaudegraf.ch>
-Date: Tue, 3 Jun 2025 17:18:16 +0200
-Subject: [PATCH] Add IBPB on vmexit
+Date: Tue, 16 Sep 2025 12:08:23 +0200
+Subject: [PATCH] Execute IBPB on every VMExit
 
 ---
  arch/x86/kvm/svm/vmenter.S | 2 ++
@@ -9,37 +9,37 @@ Subject: [PATCH] Add IBPB on vmexit
  2 files changed, 3 insertions(+)
 
 diff --git a/arch/x86/kvm/svm/vmenter.S b/arch/x86/kvm/svm/vmenter.S
-index 9499f9c6b077..957de0562fa2 100644
+index 235c4af6b692..2c86f32d27dc 100644
 --- a/arch/x86/kvm/svm/vmenter.S
 +++ b/arch/x86/kvm/svm/vmenter.S
-@@ -222,6 +222,7 @@ SYM_FUNC_START(__svm_vcpu_run)
+@@ -221,6 +221,7 @@ SYM_FUNC_START(__svm_vcpu_run)
  	 * because interrupt handlers won't sanitize 'ret' if the return is
  	 * from the kernel.
  	 */
-+	call entry_ibpb
++	 call write_ibpb
  	UNTRAIN_RET_VM
  
  	/*
-@@ -359,6 +360,7 @@ SYM_FUNC_START(__svm_sev_es_vcpu_run)
+@@ -357,6 +358,7 @@ SYM_FUNC_START(__svm_sev_es_vcpu_run)
  	 * because interrupt handlers won't sanitize RET if the return is
  	 * from the kernel.
  	 */
-+	call entry_ibpb
++	call write_ibpb
  	UNTRAIN_RET_VM
  
- 	/* "Pop" @spec_ctrl_intercepted.  */
+ 	FRAME_END
 diff --git a/arch/x86/kvm/vmx/vmenter.S b/arch/x86/kvm/vmx/vmenter.S
-index 2bfbf758d061..f8cdd9e9be93 100644
+index 0a6cf5bff2aa..77ea460b2f2e 100644
 --- a/arch/x86/kvm/vmx/vmenter.S
 +++ b/arch/x86/kvm/vmx/vmenter.S
-@@ -274,6 +274,7 @@ SYM_INNER_LABEL_ALIGN(vmx_vmexit, SYM_L_GLOBAL)
+@@ -273,6 +273,7 @@ SYM_INNER_LABEL_ALIGN(vmx_vmexit, SYM_L_GLOBAL)
  	pop %_ASM_ARG1	/* @vmx */
  
  	call vmx_spec_ctrl_restore_host
-+	call entry_ibpb
++	call write_ibpb
  
- 	/* Put return value in AX */
- 	mov %_ASM_BX, %_ASM_AX
+ 	CLEAR_BRANCH_HISTORY_VMEXIT
+ 
 -- 
-2.49.0
+2.51.0
 
