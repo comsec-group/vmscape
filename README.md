@@ -34,8 +34,6 @@ Our artefacts are structured as follows:
 
 - **[uARF](uARF/README.md):** Our custom reverse-engineering and exploitation library.
 
-- **[poc](poc/README.md):**
-
 ## Citing our Paper
 
 Please use the following BibTeX entry to cite our work:

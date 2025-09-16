@@ -10,6 +10,7 @@
 #define UARF_IOCTL_VMMCALL   _IOWR('m', 6, uint32_t)
 #define UARF_IOCTL_OUT       _IOWR('m', 7, UarfPiReqOut)
 #define UARF_IOCTL_OUTS      _IOWR('m', 8, UarfPiReqOuts)
+#define UARF_IOCTL_MMIO      _IOWR('m', 9, UarfPiReqMmio)
 
 // For rdmsr/rwmsr
 typedef struct UarfPiReqMsr UarfPiReqMsr;
@@ -38,3 +39,10 @@ struct UarfPiReqOuts {
     size_t len;
     uint16_t port;
 };
+
+typedef struct UarfPiReqMmio UarfPiReqMmio;
+struct UarfPiReqMmio {
+    uint64_t addr;
+    uint64_t value;
+};
+

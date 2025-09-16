@@ -1,8 +1,0 @@
-busybox
-bzImage
-enc.qcow2
-initramfs
-initramfs-base.cpio.gz
-initramfs-eval.cpio.gz
-linux
-secret.txt

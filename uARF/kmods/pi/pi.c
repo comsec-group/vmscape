@@ -8,6 +8,7 @@
 #include <linux/printk.h>
 #include <linux/uaccess.h>
 #include <linux/version.h>
+#include <linux/io.h>
 
 #include "pi.h"
 
@@ -31,6 +32,29 @@ static long uarf_pi_ioctl(struct file *file, unsigned int cmd, unsigned long arg
     // pr_debug("PI IOCTL received\n");
 
     switch (cmd) {
+    case UARF_IOCTL_MMIO: {
+        struct UarfPiReqMmio req;
+        if (copy_from_user(&req, (struct msr_request __user *) arg, sizeof(req))) {
+            pr_warn("Failed to copy data from user\n");
+            return -EINVAL;
+        }
+
+        pr_debug("Type MMIO: addr 0x%llx\n", req.addr);
+        void __iomem *vaddr = ioremap(req.addr, 8);
+        if (vaddr){
+            *(volatile uint64_t *)vaddr = req.value;
+            pr_debug("Wrote value 0x%llx\n", req.value);
+        } else {
+            pr_err("Failed to get addr\n");
+        }
+
+        if (copy_to_user((struct msr_request __user *) arg, &req, sizeof(req))) {
+            pr_warn("Failed to copy data back to user\n");
+            return -EINVAL;
+        }
+
+        break;
+    }
     case UARF_IOCTL_RDMSR: {
 
         struct UarfPiReqMsr req;
