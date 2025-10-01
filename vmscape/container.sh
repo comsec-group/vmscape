@@ -41,6 +41,7 @@ if ! [ -d "$CONTAINER_DIR" ]; then
     run-nspawn -- apt install -y \
         ./guest/qemu/qemu-system-common_10.0.2+ds-1ubuntu2_amd64.deb \
         ./guest/qemu/qemu-system-x86_10.0.2+ds-1ubuntu2_amd64.deb \
+        ./guest/qemu/qemu-system-data_10.0.2+ds-1ubuntu2_all.deb \
         ./guest/qemu/qemu-utils_10.0.2+ds-1ubuntu2_amd64.deb
 
     # for debugging
