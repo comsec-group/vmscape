@@ -21,9 +21,6 @@ mpl.rcParams.update(
     {
         # "text.usetex": True,
         "font.family": "serif",
-        "font.serif": [
-            "Times New Roman"
-        ],  # or "Computer Modern" if you prefer default LaTeX fonts
         "axes.labelsize": 10,
         "axes.titlesize": 12,
         "xtick.labelsize": 9,

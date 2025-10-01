@@ -169,14 +169,14 @@ patch_selftest $KERNEL_PATH SELFTEST_PATCHES
 
 setup_uarf "$UARF_PATH"
 
-log_info "Building kernel for host"
-kernel_prepare_src "$KERNEL_PATH" "$KERNEL_SELFTEST_BR"
-kernel_config_host "$KERNEL_PATH"
-kernel_build "$KERNEL_PATH" "$new_kernel_build_name"
-install_kernel "$KERNEL_PATH" "$new_kernel_build_name"
-if ! is_kernel_installed "$new_kernel_build_name"; then
-    log_err "Failed to install kernel"
-    exit 1
-fi
+#log_info "Building kernel for host"
+#kernel_prepare_src "$KERNEL_PATH" "$KERNEL_SELFTEST_BR"
+#kernel_config_host "$KERNEL_PATH"
+#kernel_build "$KERNEL_PATH" "$new_kernel_build_name"
+#install_kernel "$KERNEL_PATH" "$new_kernel_build_name"
+#if ! is_kernel_installed "$new_kernel_build_name"; then
+#    log_err "Failed to install kernel"
+#    exit 1
+#fi
 
 log_info "Setup complete."

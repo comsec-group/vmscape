@@ -6,10 +6,17 @@ MARCH ?= MARCH_ZEN4
 CUSTOM_DEFS ?=
 CFLAGS := -O3 -Wall -g -static -no-pie -I$(UARF_INCLUDE) $(CUSTOM_DEFS) -D$(MARCH)
 
-all: measure_window evict_eval
+all: measure_window evict_eval /dev/pi
 
 measure_window: $(UARF_SRC)/mem.o $(UARF_SRC)/log.o $(UARF_SRC)/jita.o $(UARF_SRC)/stub.o $(UARF_SRC)/vsnip.o
 evict_eval: $(UARF_SRC)/mem.o $(UARF_SRC)/log.o
+.PHONY: kmods
+kmods:
+	@make -C $(UARF_DIR) kmods_clean
+	@make -C $(UARF_DIR) kmods
+/dev/pi: kmods
+	@sudo rmmod pi || true
+	@sudo insmod $(UARF_DIR)/kmods/pi/pi.ko
 
 .PHONY: clean
 clean:

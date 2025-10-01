@@ -96,6 +96,7 @@ fi
 
 # Required to rebuild as they need to match kernel version
 log_info "Build custom kernel modules"
+make -C "$UARF_PATH" kmods_clean
 make -C "$UARF_PATH" kmods -j "$(nproc)"
 
 log_info "Load custom kernel modules. Requires sudo."

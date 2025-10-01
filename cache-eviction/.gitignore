@@ -2,3 +2,4 @@ measure_window
 evict_eval
 initramfs-evict.cpio.gz
 data/*
+speculation_window_ieee.pdf
