@@ -18,12 +18,14 @@ QCOW_FILE="$SCRIPT_DIR/enc.qcow2"
 eval=false
 initrd_file="$INITRD_MANUAL_FILE"
 secret_size="$DEFAULT_SECRET_SIZE"
+core=6
 
 function usage() {
     echo "Usage: $0 [OPTIONS]"
     echo ""
     echo "Options:"
     echo "       --initramfs        Use a specific initramfs."
+    echo "       --core             Run VM on specific core."
     echo "       --demo             Run VM in demo mode with a shorter secret."
     echo "   -e, --eval             Run VM in evaluation mode."
     echo "   -h, --help             Display this help message."
@@ -37,7 +39,7 @@ function random_string() {
     tr -dc A-Za-z0-9 2>/dev/null </dev/urandom | head -c "$count"
 }
 
-PARSED_ARGUMENTS=$(getopt --name "$0" --options=h --longoptions demo,eval,help,initramfs: -- "$@")
+PARSED_ARGUMENTS=$(getopt --name "$0" --options=h --longoptions demo,eval,help,initramfs:,core: -- "$@")
 VALID_ARGUMENTS=$?
 if [ "$VALID_ARGUMENTS" != "0" ]; then
     echo "Invalid argument"
@@ -48,6 +50,11 @@ fi
 eval set -- "$PARSED_ARGUMENTS"
 while [ "$#" -gt 1 ]; do
     case "$1" in
+        --core)
+            shift
+            core="$1"
+            shift
+            ;;
         --demo)
             secret_size=32
             demo=true
@@ -88,7 +95,7 @@ if (! [ -f "$QCOW_FILE" ]) || $eval; then
     qemu-img create -f qcow2 -o encrypt.format=luks -o "encrypt.key-secret=$QCOW_SECRET_NAME" --object "secret,id=$QCOW_SECRET_NAME,file=$SECRET_FILE" "$QCOW_FILE" 0.1G
 fi
 
-taskset -c 6 qemu-system-x86_64 \
+taskset -c "$core" qemu-system-x86_64 \
     -m 8G \
     -cpu host,kvm=on \
     -enable-kvm \

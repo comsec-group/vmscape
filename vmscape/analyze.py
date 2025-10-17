@@ -19,13 +19,15 @@ REGEX_LEAK_TIME = r"leak_array time = (?P<seconds>\d+\.\d+)s"
 # It is very important that the errors are listed in the order in which they appear
 class Error(StrEnum):
     ASLR = "Failed to break KASLR!"
+    ASLR2 = "Not hitting it right"
+    ASLR3 = "Failed to find victim extra offset"
     MEM = "Failed to open /dev/mem"
     HP = "Failed to map 1G"
     HP2 = "Failed to map 1G"
     MAP = "Failed to map snippets"
     MMIO = "Failed to map MMIO"
-    ASLR2 = "Not hitting it right"
     RB = "Error getting rb_hva"
+    L2 = "Non-unique L2 set match"
     L3 = "Failed to build L3 eviction sets!"
     ES = "Eviction set not found!"
     FILE = "Failed to open output file!"
@@ -38,7 +40,6 @@ class Error(StrEnum):
     SECRET_DATA_PTR = "Failed to retrieve rawdata_ptr"
     HT_TABLE = "Failed to retrieve hash_table_ptr"
     HT_KEY_ARRAY = "Failed to retrieve hash_table_key_ptr"
-    HT_KEY_ENTRY = "Failed to retrieve hash_table_key"
     HT_INVALID_CHOICE = "Invalid object choice"
     HT_VALUE_ARRAY = "Failed to retrieve hash_table_value_ptr"
     HT_VALUE_ENTRY = "Failed to retrieve child_obj_prop_ptr"
@@ -46,14 +47,16 @@ class Error(StrEnum):
 
 
 ERROR_REGEX: dict[Error, str] = {}
-ERROR_REGEX[Error.ASLR] = r".*failed to break code ASLR!.*"
+ERROR_REGEX[Error.ASLR] = r".*Failed to break code ASLR!.*"
+ERROR_REGEX[Error.ASLR2] = r".*Not hitting it right.*"
+ERROR_REGEX[Error.ASLR3] = r".*Failed to find victim extra offset.*"
 ERROR_REGEX[Error.MEM] = r".*Failed to open /dev/mem.*"
 ERROR_REGEX[Error.HP] = r".*Failed to map 1G.*"
 ERROR_REGEX[Error.HP2] = r".*mmap 1G page.*"
 ERROR_REGEX[Error.MAP] = r".*Failed to map 4096B at.*"
 ERROR_REGEX[Error.MMIO] = r".*Failed to map MMIO.*"
-ERROR_REGEX[Error.ASLR2] = r".*not hitting it right.*"
 ERROR_REGEX[Error.RB] = r".*Error getting rb_hva.*"
+ERROR_REGEX[Error.L2] = r".*Non-unique L2 set match.*"
 ERROR_REGEX[Error.L3] = r".*Failed to build L3 eviction sets!.*"
 ERROR_REGEX[Error.ES] = r".*Eviction set not found!.*"
 ERROR_REGEX[Error.FILE] = r".*Failed to open output file.*"
@@ -66,7 +69,6 @@ ERROR_REGEX[Error.SECRET_LEN] = r".*Failed to retrieve rawlen.*"
 ERROR_REGEX[Error.SECRET_DATA_PTR] = r".*Failed to retrieve rawdata_ptr.*"
 ERROR_REGEX[Error.HT_TABLE] = r".*Failed to retrieve hash_table_ptr.*"
 ERROR_REGEX[Error.HT_KEY_ARRAY] = r".*Failed to retrieve hash_table_key_ptr.*"
-ERROR_REGEX[Error.HT_KEY_ENTRY] = r".*Failed to retrieve hash_table_key.*"
 ERROR_REGEX[Error.HT_INVALID_CHOICE] = r".*Invalid choice.*"
 ERROR_REGEX[Error.HT_VALUE_ARRAY] = r".*Failed to retrieve hash_table_value_ptr.*"
 ERROR_REGEX[Error.HT_VALUE_ENTRY] = r".*Failed to retrieve child_obj_prop_ptr.*"
@@ -101,7 +103,6 @@ def secret_diff(path_reference: str, path_guess: str) -> int:
 
 
 def main():
-
     files: list[Path] = []
 
     if len(sys.argv) == 1:
@@ -203,6 +204,7 @@ def main():
                 else:
                     success_count = None
                     leak_failed = True
+                    print(f"leak failed file: {file}")
 
         if aslr_time:
             aslr_time_list.append(aslr_time)
@@ -231,7 +233,7 @@ def main():
 
     print(f"Repetitions: {len(files)}")
 
-    print(f"{10*'='} ERROR STATS {10 * '='}")
+    print(f"{10 * '='} ERROR STATS {10 * '='}")
 
     num_valid = len(files)
     for k in Error:
@@ -253,8 +255,8 @@ def main():
     # calculate the median value for each
     aslr_time_median = round(statistics.median(aslr_time_list))
     rb_time_median = round(statistics.median(rb_time_list))
-    l3_build_time_median = round(statistics.median(l3_build_time_list))
-    l3_search_time_median = round(statistics.median(l3_search_time_list))
+    # l3_build_time_median = round(statistics.median(l3_build_time_list))
+    # l3_search_time_median = round(statistics.median(l3_search_time_list))
     # leak_time_median = round(statistics.median(leak_time_list))
     leak_rate_median = round(statistics.median([LEAK_SIZE / t for t in leak_time_list]))
     success_count_median = round(statistics.median(success_count_list))
@@ -263,14 +265,14 @@ def main():
         statistics.median([a + b for a, b in zip(aslr_time_list, attack_time_list)])
     )
 
-    print(f"{10*'='} TIMING STATS {10 * '='}")
+    print(f"{10 * '='} TIMING STATS {10 * '='}")
     print(f"ASLR Break Median Time: {aslr_time_median}s")
     print(f"RB Search Median Time: {rb_time_median}s")
     print(f"Leak Rate Median: {leak_rate_median}B/s")
     print(f"End-to-end Median Time: {end_to_end_median}s")
     print(f"End-to-end Median Time2: {aslr_time_median + attack_time_median}s")
 
-    print(f"{10*'='} CHANNEL STATS {10 * '='}")
+    print(f"{10 * '='} CHANNEL STATS {10 * '='}")
     print(f"Channel accuracy: {success_count_median / LEAK_SIZE * 100:.2f}%")
 
 

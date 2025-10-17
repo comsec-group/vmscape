@@ -1,2 +1,5 @@
 container-ubuntu-questing
 .#container-ubuntu-questing.lck
+data
+data*
+.venv

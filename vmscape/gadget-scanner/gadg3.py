@@ -5,7 +5,7 @@ import os
 import re
 import sys
 import pprint
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor
 from subprocess import check_output
 from typing import Generator, Optional
 
@@ -532,6 +532,8 @@ class Job:
     def __init__(self, sect_off: int, elf_sh) -> None:
         self.sect_off: int = sect_off
         self.elf_sh = elf_sh
+        self.sh_addr = self.elf_sh.sh_addr
+        self.sh_size = self.elf_sh.sh_size
 
 
 def reg_predictable(reg: RegisterState | None):
@@ -1026,8 +1028,8 @@ def scan_job(data):
     found_gadgets = []
     last_found = None  # we want to avoid printing the same gadget multiple times
 
-    for off in range(job.sect_off, min(job.sect_off + JOB_CHUNK, job.elf_sh.sh_size)):
-        va = job.elf_sh.sh_addr + off
+    for off in range(job.sect_off, min(job.sect_off + JOB_CHUNK, job.sh_size)):
+        va = job.sh_addr + off
         codeview: bytearray = blob[off : off + CODE_VIEW_SIZE]
 
         # check the current code view for gadgets
@@ -1045,7 +1047,7 @@ def scan_job(data):
 
 
 def scan_binary(
-    executor: ThreadPoolExecutor | DummyExecutor,
+    executor: ProcessPoolExecutor | ThreadPoolExecutor | DummyExecutor,
     binary_path,
     output_file,
     start_va=None,
@@ -1119,7 +1121,7 @@ def main():
     if TEST_MODE or DEBUG:
         executor = DummyExecutor()
     else:
-        executor = ThreadPoolExecutor(max_workers=THREADS)
+        executor = ProcessPoolExecutor(max_workers=THREADS)
 
     # write gadgets to a file
     gadget_count = 0

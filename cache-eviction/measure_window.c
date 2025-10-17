@@ -17,7 +17,7 @@
 #include "jita.h"
 #include "lib.h"
 #include "log.h"
-#include "mem.h"
+#include "psnip.h"
 #include "rb_tools.h"
 
 #define PAGE_4K     (4096UL)
@@ -38,7 +38,7 @@ uarf_psnip_declare_define(psnip_src,
 // clang-format on
 
 // clang-format off
-uarf_psnip_declare_define(psnip_victim_dst, 
+uarf_psnip_declare_define(psnip_victim_dst,
     "mfence\n\t" // Stop speculation
     "lfence\n\t"
     "ret\n\t"
@@ -46,7 +46,7 @@ uarf_psnip_declare_define(psnip_victim_dst,
 // clang-format on
 
 // clang-format off
-uarf_psnip_declare_define(psnip_train_dst, 
+uarf_psnip_declare_define(psnip_train_dst,
     "mov (%rdx), %r8\n\t"
     ".rept "STR(MAX_CHAIN-1)"\n\t"
     "mov (%r8), %r8\n\t"

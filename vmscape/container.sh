@@ -22,8 +22,8 @@ function run-nspawn() {
         --bind /dev/fuse \
         --bind /dev/loop-control \
         --chdir /workspace/vmscape \
-	-E "http_proxy=$http_proxy" \
-	-E "https_proxy=$https_proxy" \
+        -E "http_proxy=$http_proxy" \
+        -E "https_proxy=$https_proxy" \
         "$@"
 }
 
@@ -47,9 +47,16 @@ if ! [ -d "$CONTAINER_DIR" ]; then
         ./guest/qemu/qemu-utils_10.0.2+ds-1ubuntu2_amd64.deb
 
     # for debugging
-    # run-nspawn -- sudo apt install -y \
+    # run-nspawn -- apt install -y \
+    #     tmux \
+    #     vim \
     #     gdb \
+    #     ubuntu-dbgsym-keyring \
     #     ./guest/qemu/qemu-system-x86-dbgsym_10.0.2+ds-1ubuntu2_amd64.ddeb
+    # for convenient glib hash table parsing in gdb
+    # run-nspawn -- sh -c 'echo "deb http://ddebs.ubuntu.com/ubuntu questing main" >> /etc/apt/sources.list'
+    # run-nspawn -- apt update
+    # run-nspawn -- apt install -y libglib2.0-0t64-dbgsym
 
     # create user and group matching host to avoid file permissions issues
     run-nspawn -- groupadd \
@@ -68,6 +75,11 @@ if ! [ -d "$CONTAINER_DIR" ]; then
         -m \
         "$USER_NAME"
 fi
+
+# we disable numa balancing which is reasonable for hypervisors that schedule a VM inside a single NUMA node.
+# "If the target workload is already bound to NUMA nodes then this feature should be disabled." - Linux Docs
+# (This is only necessary for CPUs with multiple NUMA nodes on operating systems that enable balancing by default)
+echo 0 | sudo tee /proc/sys/kernel/numa_balancing
 
 if [ "$#" -gt "0" ]; then
     run-nspawn "$@"

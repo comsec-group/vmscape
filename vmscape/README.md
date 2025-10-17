@@ -2,9 +2,8 @@
 
 Our end-to-end exploit leaking QEMU secrets on Zen 4.
 These microarchitectural attacks require fine-tuning for the specific processors they are running on.
-The attack currently present in this directory was tuned specifically for the Ryzen 7 7700X Zen 4 processor.
-Since Ubuntu 25.10 is not yet stable, you might experience some issues when building.
-We recommend to instead prepare the server with Ubuntu 24.04 and use our systemd-nspawn container to run the correct binaries.
+The attack has two configurations: one for the AMD Ryzen 7 7700X Zen 4 processor and another for the AMD EPYC 9555 Zen 5 processor.
+We recommend to run the experiment on an Ubuntu 24.04 and use our systemd-nspawn container to run the correct qemu binaries.
 
 **Dependencies**
 
@@ -14,6 +13,10 @@ wget cpio build-essential libncurses-dev bison bc flex libssl-dev libelf-dev
 ```bash
 # build the components
 bash build.sh
+
+# for zen 5, additionally run this
+# make -C attack clean
+# make -C attack MARCH=MARCH_ZEN5
 
 # enter the reproducible ubuntu 25.10 container to use the correct qemu binary
 bash container.sh
@@ -26,6 +29,3 @@ bash guest/run-vm.sh
 
 # to stop the virtual machine, press Ctrl-A, X
 ```
-
-> [!todo] More details will be added in the coming days
-

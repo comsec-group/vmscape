@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
 #pragma once
 #include <err.h>
+#include <linux/memfd.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
