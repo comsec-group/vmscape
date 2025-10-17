@@ -22,6 +22,8 @@ function run-nspawn() {
         --bind /dev/fuse \
         --bind /dev/loop-control \
         --chdir /workspace/vmscape \
+	-E "http_proxy=$http_proxy" \
+	-E "https_proxy=$https_proxy" \
         "$@"
 }
 
