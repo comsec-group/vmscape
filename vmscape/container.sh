@@ -12,6 +12,9 @@ GROUP_ID="$(id -g)"
 KVM_NAME="kvm"
 KVM_ID="$(getent group "$KVM_NAME" | cut -d: -f3)"
 
+http_proxy="${http_proxy:-}"
+https_proxy="${https_proxy:-}"
+
 function run-nspawn() {
     sudo systemd-nspawn \
         -D "$CONTAINER_DIR" \
